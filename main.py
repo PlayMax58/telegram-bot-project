@@ -12,8 +12,7 @@ load_dotenv()
 # ==========================================
 # НАСТРОЙКИ
 # ==========================================
-TOKEN = os.getenv("BOT_TOKEN")
-bot = telebot.TeleBot(TOKEN)
+bot = telebot.TeleBot(os.getenv("BOT_TOKEN"))
 STATS_FILE = 'stats.json'
 opt = get_optimization('stats.json')
 
