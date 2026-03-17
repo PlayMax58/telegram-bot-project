@@ -13,7 +13,7 @@ load_dotenv()
 # НАСТРОЙКИ
 # ==========================================
 bot = telebot.TeleBot(os.getenv("BOT_TOKEN"))
-STATS_FILE = 'tmpkeg8ymb_.json'
+STATS_FILE = 'stats.json'
 opt = get_optimization('stats.json')
 
 # Настройки для задания 10 (Группы правил)
