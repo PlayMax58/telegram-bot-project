@@ -13,8 +13,10 @@ load_dotenv()
 # НАСТРОЙКИ
 # ==========================================
 bot = telebot.TeleBot(os.getenv("BOT_TOKEN"))
-STATS_FILE = 'stats.json'
-opt = get_optimization('stats.json')
+SHARED_DIR = os.environ.get('SHARED_DIR', '/app/shared')
+STATS_FILE = os.path.join(SHARED_DIR, 'stats.json')
+
+opt = get_optimization(STATS_FILE)
 
 # Настройки для задания 10 (Группы правил)
 GROUP_ZS = ['з', 'с']
