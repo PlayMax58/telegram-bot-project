@@ -632,98 +632,146 @@ def del_plan(m):
 # ==========================================
 # ОБРАБОТЧИК ОТВЕТОВ (СЕРДЦЕ БОТА)
 # ==========================================
-@bot.message_handler(func=lambda m: True)  # Ловит всё остальное, если есть состояние
+@bot.message_handler(func=lambda m: True)
 def global_answer_handler(m):
     cid = m.chat.id
-    if cid in user_state and user_state[cid].get('task_num') in ['17', '18', '19', '20']:
-        return  # эти задания обрабатываются в punct.py
+    
+    # 1. ПРОВЕРКА СОСТОЯНИЯ
     if cid not in user_state:
-        # Если состояния нет, но пользователь пишет, игнорируем или шлем меню
-        return bot.send_message(cid, "Используйте меню:", reply_markup=main_kb())
-
+        bot.send_message(cid, "Используйте меню:", reply_markup=main_kb())
+        return
+    
+    # 2. ПРОВЕРКА ПУНКТУАЦИИ (пропускаем)
+    if user_state[cid].get('task_num') in ['17','18','19','20']:
+        return
+    
     state = user_state[cid]
     mode = state.get('mode')
-
-    # Если режима нет (просто выбрано задание), ничего не делаем
-    if not mode: return
-
+    
+    # 3. ЕСЛИ РЕЖИМА НЕТ - ИГНОРИРУЕМ
+    if not mode:
+        return
+    
+    # 4. ЗАГРУЗКА ДАННЫХ
     data = load_data()
     task_num = state['task_num']
     t_data = data["tasks"][task_num]
-
-    # --- ЛОГИКА ТРЕНИРОВКИ ---
+    
+    # 5. ОБРАБОТКА ТРЕНИРОВКИ
     if mode == 'train':
-        # Оставляем только цифры
-        user_ans = "".join(sorted(set(filter(str.isdigit, m.text))))
-
+        # Получаем ответ пользователя (только цифры)
+        user_digits = ''.join([c for c in m.text if c.isdigit()])
+        user_answer = ''.join(sorted(set(user_digits)))
+        
+        correct_answer = state.get('correct_ans', '')
+        
+        # Обновляем статистику
         t_data["stats"]["total"] += 1
-
-        if user_ans == state['correct_ans']:
+        
+        if user_answer == correct_answer:
             t_data["stats"]["correct"] += 1
-            state['session_score'] += 1
+            state['session_score'] = state.get('session_score', 0) + 1
             bot.send_message(cid, "✅ Правильно!")
         else:
-            bot.send_message(cid,
-                             f"❌ Ошибка!\nПравильный ответ: {state['correct_ans']}\n\nРазбор:\n{state['explanation']}")
-
+            bot.send_message(cid, f"❌ Ошибка! Правильный ответ: {correct_answer}")
+        
+        # Сохраняем
         save_data(data)
-
+        
         # Следующий вопрос или конец
-        state['remaining'] -= 1
+        state['remaining'] = state.get('remaining', 1) - 1
+        
         if state['remaining'] > 0:
-            send_train_question(cid)
+            # Отправляем следующий вопрос
+            text, ans, full = generate_task(task_num)
+            state['correct_ans'] = ans
+            state['explanation'] = full
+            bot.send_message(cid, f"📝 Задание №{task_num} (Осталось: {state['remaining']})\n\n{text}")
         else:
-            bot.send_message(cid, f"🏁 Тренировка окончена.\nРезультат: {state['session_score']}",
-                             reply_markup=task_kb())
-            del state['mode']  # Выходим из режима тренировки
-
-    # --- ЛОГИКА ИГРЫ И РАБОТЫ НАД ОШИБКАМИ ---
-    elif mode in ['word_game', 'correction']:
-        user_char = m.text.strip().lower()
-        target_obj = state['word_obj']
-
-        if user_char == target_obj['letter']:
+            bot.send_message(cid, f"🏁 Тренировка окончена. Результат: {state.get('session_score', 0)}", reply_markup=task_kb())
+            del state['mode']
+            if 'session_score' in state: del state['session_score']
+            if 'remaining' in state: del state['remaining']
+            if 'correct_ans' in state: del state['correct_ans']
+    
+    # 6. ОБРАБОТКА ИГРЫ СО СЛОВАМИ
+    elif mode == 'word_game':
+        word_obj = state.get('word_obj')
+        if not word_obj:
+            bot.send_message(cid, "Ошибка. Начните игру заново.")
+            del state['mode']
+            return
+        
+        user_letter = m.text.strip().lower()
+        
+        if user_letter == word_obj['letter']:
             bot.send_message(cid, "✅ Верно!")
-
-            if mode == 'word_game':
-                # Увеличиваем серию
-                t_data["stats"]["streak"] += 1
-                if t_data["stats"]["streak"] > t_data["stats"]["best_streak"]:
-                    t_data["stats"]["best_streak"] = t_data["stats"]["streak"]
-
-                # Добавляем в выученные
-                if target_obj['hidden'] not in t_data["completed_words"]:
-                    t_data["completed_words"].append(target_obj['hidden'])
-
-                save_data(data)
-                game_start(m)  # Следующее слово
-
-            else:  # correction
-                # Удаляем из ошибок (сравнение по hidden слову)
-                new_wrong = [w for w in t_data["wrong_words"] if w['hidden'] != target_obj['hidden']]
-                t_data["wrong_words"] = new_wrong
-                save_data(data)
-                bot.send_message(cid, "Слово исправлено!", reply_markup=words_kb())
-                del state['mode']
-
+            
+            # Обновляем статистику
+            t_data["stats"]["streak"] = t_data["stats"].get("streak", 0) + 1
+            if t_data["stats"]["streak"] > t_data["stats"].get("best_streak", 0):
+                t_data["stats"]["best_streak"] = t_data["stats"]["streak"]
+            
+            # Добавляем в выученные
+            if 'completed_words' not in t_data:
+                t_data['completed_words'] = []
+            if word_obj['hidden'] not in t_data['completed_words']:
+                t_data['completed_words'].append(word_obj['hidden'])
+            
+            save_data(data)
+            
+            # Следующее слово
+            game_start(m)
         else:
-            bot.send_message(cid, f"❌ Ошибка! Правильно: {target_obj['full']}")
-
-            if mode == 'word_game':
-                # Сброс серии
-                t_data["stats"]["streak"] = 0
-
-                # Добавляем в ошибки (если еще нет)
-                is_exist = any(w['hidden'] == target_obj['hidden'] for w in t_data["wrong_words"])
-                if not is_exist:
-                    t_data["wrong_words"].append(target_obj)
-
-                save_data(data)
-                bot.send_message(cid, "Серия прервана. Слово ушло в «Работу над ошибками».", reply_markup=words_kb())
-                del state['mode']
-            else:
-                bot.send_message(cid, "Попробуй еще раз позже.", reply_markup=words_kb())
-                del state['mode']
+            bot.send_message(cid, f"❌ Ошибка! Правильно: {word_obj['full']}")
+            
+            # Сбрасываем серию
+            t_data["stats"]["streak"] = 0
+            
+            # Добавляем в список ошибок
+            if 'wrong_words' not in t_data:
+                t_data['wrong_words'] = []
+            
+            exists = False
+            for w in t_data['wrong_words']:
+                if w.get('hidden') == word_obj['hidden']:
+                    exists = True
+                    break
+            
+            if not exists:
+                t_data['wrong_words'].append(word_obj)
+            
+            save_data(data)
+            bot.send_message(cid, "Слово ушло в «Работу над ошибками».", reply_markup=words_kb())
+            del state['mode']
+    
+    # 7. ОБРАБОТКА РАБОТЫ НАД ОШИБКАМИ
+    elif mode == 'correction':
+        word_obj = state.get('word_obj')
+        if not word_obj:
+            bot.send_message(cid, "Ошибка. Начните заново.")
+            del state['mode']
+            return
+        
+        user_letter = m.text.strip().lower()
+        
+        if user_letter == word_obj['letter']:
+            bot.send_message(cid, "✅ Верно! Слово исправлено.")
+            
+            # Удаляем из списка ошибок
+            if 'wrong_words' in t_data:
+                new_wrong = []
+                for w in t_data['wrong_words']:
+                    if w.get('hidden') != word_obj['hidden']:
+                        new_wrong.append(w)
+                t_data['wrong_words'] = new_wrong
+            
+            save_data(data)
+            bot.send_message(cid, "Возвращаюсь в меню...", reply_markup=words_kb())
+            del state['mode']
+        else:
+            bot.send_message(cid, f"❌ Ошибка! Правильно: {word_obj['full']}. Попробуйте позже.")
+            del state['mode']
 
 
 # ==========================================
