@@ -605,101 +605,209 @@ def del_plan(m):
 # ==========================================
 # ОБРАБОТЧИК ОТВЕТОВ (СЕРДЦЕ БОТА)
 # ==========================================
+# ==========================================
+# ОБРАБОТЧИК ОТВЕТОВ (СЕРДЦЕ БОТА)
+# ==========================================
 @bot.message_handler(func=lambda m: True)
 def global_answer_handler(m):
     cid = m.chat.id
+    import time
+    start_time = time.time()
+    
+    # ========== ДИАГНОСТИКА ==========
+    print(f"\n{'='*50}")
+    print(f"📩 ПОЛУЧЕНО СООБЩЕНИЕ от {cid}")
+    print(f"Текст: '{m.text}'")
+    # ================================
     
     # 1. ПРОВЕРКА СОСТОЯНИЯ
     if cid not in user_state:
+        print(f"❌ Нет состояния для {cid}")
         bot.send_message(cid, "Используйте меню:", reply_markup=main_kb())
         return
     
     # 2. ПРОВЕРКА ПУНКТУАЦИИ (пропускаем)
     if user_state[cid].get('task_num') in ['17','18','19','20']:
+        print(f"➡️ Задание пунктуации {user_state[cid].get('task_num')} - пропускаем")
         return
     
     state = user_state[cid]
     mode = state.get('mode')
+    task_num = state.get('task_num')
+    
+    print(f"🎯 Режим: {mode}, Задание: {task_num}")
     
     # 3. ЕСЛИ РЕЖИМА НЕТ - ИГНОРИРУЕМ
     if not mode:
+        print("⚠️ Режима нет - игнорируем")
         return
     
     # 4. ЗАГРУЗКА ДАННЫХ
-    data = load_data()
+    try:
+        data = load_data()
+        print("✅ Данные загружены")
+    except Exception as e:
+        print(f"❌ Ошибка загрузки данных: {e}")
+        bot.send_message(cid, "Ошибка загрузки данных. Попробуйте позже.")
+        return
+    
     task_num = state['task_num']
+    
+    # Проверяем наличие задания в данных
+    if task_num not in data["tasks"]:
+        print(f"⚠️ Задание {task_num} отсутствует в данных, создаем...")
+        data["tasks"][task_num] = {
+            "stats": {"total": 0, "correct": 0, "streak": 0, "best_streak": 0},
+            "wrong_words": [],
+            "completed_words": []
+        }
+    
     t_data = data["tasks"][task_num]
     
     # 5. ОБРАБОТКА ТРЕНИРОВКИ
-if mode == 'train':
-    # Получаем ответ пользователя (только цифры)
-    user_digits = ''.join([c for c in m.text if c.isdigit()])
-    user_answer = ''.join(sorted(set(user_digits)))
-    
-    correct_answer = state.get('correct_ans', '')
-    
-    # Обновляем статистику
-    t_data["stats"]["total"] += 1
-    
-    if user_answer == correct_answer:
-        t_data["stats"]["correct"] += 1
-        state['session_score'] = state.get('session_score', 0) + 1
-        bot.send_message(cid, "✅ Правильно!")
-    else:
-        bot.send_message(cid, f"❌ Ошибка! Правильный ответ: {correct_answer}")
+    if mode == 'train':
+        print(f"\n{'='*30}")
+        print("🏋️ РЕЖИМ ТРЕНИРОВКИ")
         
-        # Сохраняем
-        save_data(data)
+        # Получаем ответ пользователя (только цифры)
+        user_digits = ''.join([c for c in m.text if c.isdigit()])
+        user_answer = ''.join(sorted(set(user_digits)))
+        
+        # Получаем правильный ответ из состояния
+        correct_answer = state.get('correct_ans', '')
+        explanation = state.get('explanation', '')
+        
+        print(f"📝 Ответ пользователя: '{user_answer}'")
+        print(f"✅ Правильный ответ: '{correct_answer}'")
+        print(f"📊 correct_answer длина: {len(correct_answer)}")
+        
+        # Обновляем статистику
+        t_data["stats"]["total"] += 1
+        print(f"📊 Статистика обновлена: total={t_data['stats']['total']}")
+        
+        # Проверяем правильность ответа
+        if user_answer == correct_answer:
+            t_data["stats"]["correct"] += 1
+            state['session_score'] = state.get('session_score', 0) + 1
+            print(f"✅ Ответ правильный! correct={t_data['stats']['correct']}")
+            
+            # Отправляем сообщение об успехе
+            bot.send_message(cid, "✅ Правильно!")
+            
+        else:
+            print(f"❌ Ответ неправильный")
+            
+            # Формируем сообщение об ошибке
+            error_msg = f"❌ Ошибка!"
+            
+            if correct_answer:
+                error_msg += f"\n\nПравильный ответ: {correct_answer}"
+            else:
+                error_msg += f"\n\n⚠️ Правильный ответ не найден в состоянии"
+                print("⚠️ ВНИМАНИЕ: correct_answer пустой!")
+            
+            if explanation and explanation.strip():
+                error_msg += f"\n\n📝 Разбор задания:\n{explanation}"
+            
+            # Отправляем сообщение
+            bot.send_message(cid, error_msg)
+            print(f"📤 Отправлено сообщение об ошибке")
+        
+        # Сохраняем данные
+        try:
+            save_data(data)
+            print("💾 Данные сохранены")
+        except Exception as e:
+            print(f"❌ Ошибка сохранения: {e}")
         
         # Следующий вопрос или конец
         state['remaining'] = state.get('remaining', 1) - 1
+        print(f"📊 Осталось заданий: {state['remaining']}")
         
         if state['remaining'] > 0:
             # Отправляем следующий вопрос
-            text, ans, full = generate_task(task_num)
-            state['correct_ans'] = ans
-            state['explanation'] = full
-            bot.send_message(cid, f"📝 Задание №{task_num} (Осталось: {state['remaining']})\n\n{text}")
+            print("🔄 Генерируем следующий вопрос...")
+            try:
+                text, ans, full = generate_task(task_num)
+                print(f"✅ Сгенерирован новый ответ: '{ans}'")
+                
+                # Сохраняем новый правильный ответ
+                state['correct_ans'] = ans
+                state['explanation'] = full
+                
+                # Отправляем вопрос
+                bot.send_message(cid, 
+                               f"📝 Задание №{task_num} (Осталось: {state['remaining']})\n\n{text}")
+                print("✅ Следующий вопрос отправлен")
+                
+            except Exception as e:
+                print(f"❌ Ошибка генерации следующего задания: {e}")
+                bot.send_message(cid, "Ошибка при генерации следующего задания.", reply_markup=task_kb())
+                # Очищаем режим в случае ошибки
+                if 'mode' in state:
+                    del state['mode']
         else:
-            bot.send_message(cid, f"🏁 Тренировка окончена. Результат: {state.get('session_score', 0)}", reply_markup=task_kb())
-            del state['mode']
-            if 'session_score' in state: del state['session_score']
-            if 'remaining' in state: del state['remaining']
-            if 'correct_ans' in state: del state['correct_ans']
+            # Тренировка окончена
+            result = state.get('session_score', 0)
+            print(f"🏁 Тренировка окончена. Результат: {result}")
+            bot.send_message(cid, 
+                           f"🏁 Тренировка окончена.\nРезультат: {result}", 
+                           reply_markup=task_kb())
+            
+            # Очищаем состояние тренировки
+            for key in ['mode', 'session_score', 'remaining', 'correct_ans', 'explanation', 'initial_remaining']:
+                if key in state:
+                    del state[key]
+            print("🧹 Состояние тренировки очищено")
     
     # 6. ОБРАБОТКА ИГРЫ СО СЛОВАМИ
     elif mode == 'word_game':
+        print(f"\n{'='*30}")
+        print("🎮 РЕЖИМ ИГРЫ СО СЛОВАМИ")
+        
         word_obj = state.get('word_obj')
         if not word_obj:
+            print("❌ Ошибка: нет word_obj в состоянии")
             bot.send_message(cid, "Ошибка. Начните игру заново.")
             del state['mode']
             return
         
         user_letter = m.text.strip().lower()
+        print(f"📝 Буква пользователя: '{user_letter}'")
+        print(f"✅ Правильная буква: '{word_obj['letter']}'")
+        print(f"📝 Слово: {word_obj['hidden']} -> {word_obj['full']}")
         
         if user_letter == word_obj['letter']:
+            print("✅ Ответ правильный!")
             bot.send_message(cid, "✅ Верно!")
             
             # Обновляем статистику
             t_data["stats"]["streak"] = t_data["stats"].get("streak", 0) + 1
             if t_data["stats"]["streak"] > t_data["stats"].get("best_streak", 0):
                 t_data["stats"]["best_streak"] = t_data["stats"]["streak"]
+                print(f"🏆 Новый рекорд! {t_data['stats']['best_streak']}")
             
             # Добавляем в выученные
             if 'completed_words' not in t_data:
                 t_data['completed_words'] = []
             if word_obj['hidden'] not in t_data['completed_words']:
                 t_data['completed_words'].append(word_obj['hidden'])
+                print(f"📚 Слово добавлено в выученные")
             
             save_data(data)
+            print("💾 Данные сохранены")
             
             # Следующее слово
+            print("🔄 Запускаем следующее слово...")
             game_start(m)
+            
         else:
+            print("❌ Ответ неправильный!")
             bot.send_message(cid, f"❌ Ошибка! Правильно: {word_obj['full']}")
             
             # Сбрасываем серию
             t_data["stats"]["streak"] = 0
+            print("📉 Серия сброшена")
             
             # Добавляем в список ошибок
             if 'wrong_words' not in t_data:
@@ -713,39 +821,65 @@ if mode == 'train':
             
             if not exists:
                 t_data['wrong_words'].append(word_obj)
+                print(f"📝 Слово добавлено в список ошибок")
             
             save_data(data)
+            print("💾 Данные сохранены")
+            
             bot.send_message(cid, "Слово ушло в «Работу над ошибками».", reply_markup=words_kb())
             del state['mode']
+            print("🧹 Режим игры очищен")
     
     # 7. ОБРАБОТКА РАБОТЫ НАД ОШИБКАМИ
     elif mode == 'correction':
+        print(f"\n{'='*30}")
+        print("🔄 РЕЖИМ РАБОТЫ НАД ОШИБКАМИ")
+        
         word_obj = state.get('word_obj')
         if not word_obj:
+            print("❌ Ошибка: нет word_obj в состоянии")
             bot.send_message(cid, "Ошибка. Начните заново.")
             del state['mode']
             return
         
         user_letter = m.text.strip().lower()
+        print(f"📝 Буква пользователя: '{user_letter}'")
+        print(f"✅ Правильная буква: '{word_obj['letter']}'")
         
         if user_letter == word_obj['letter']:
+            print("✅ Ответ правильный!")
             bot.send_message(cid, "✅ Верно! Слово исправлено.")
             
             # Удаляем из списка ошибок
             if 'wrong_words' in t_data:
+                old_count = len(t_data['wrong_words'])
                 new_wrong = []
                 for w in t_data['wrong_words']:
                     if w.get('hidden') != word_obj['hidden']:
                         new_wrong.append(w)
                 t_data['wrong_words'] = new_wrong
+                print(f"📊 Удалено из ошибок: {old_count - len(new_wrong)} слов")
             
             save_data(data)
+            print("💾 Данные сохранены")
+            
             bot.send_message(cid, "Возвращаюсь в меню...", reply_markup=words_kb())
             del state['mode']
+            print("🧹 Режим исправления очищен")
+            
         else:
+            print("❌ Ответ неправильный!")
             bot.send_message(cid, f"❌ Ошибка! Правильно: {word_obj['full']}. Попробуйте позже.")
             del state['mode']
-
+            print("🧹 Режим исправления очищен (из-за ошибки)")
+    
+    else:
+        print(f"⚠️ Неизвестный режим: {mode}")
+    
+    # Диагностика времени выполнения
+    elapsed = time.time() - start_time
+    print(f"⏱️ Время обработки: {elapsed:.2f} сек")
+    print(f"{'='*50}\n")
 
 # ==========================================
 # ЗАПУСК
