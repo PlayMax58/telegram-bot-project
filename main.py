@@ -6,6 +6,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 import punct
 from optimization import get_optimization
+from datetime import datetime
 
 load_dotenv()
 
