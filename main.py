@@ -33,7 +33,57 @@ scheduler.start()
 # ==========================================
 def load_data():
     """Загружает данные с использованием кеша"""
-    return opt.load_stats()  # Вместо загрузки из файла каждый раз
+    try:
+        data = opt.load_stats()
+        
+        # Если данные пустые или нет ключа 'tasks' - создаем структуру
+        if not data or 'tasks' not in data:
+            print("⚠️ Данные повреждены или отсутствуют, создаю новую структуру")
+            
+            # Создаем пустую структуру
+            data = {
+                "last_reset": datetime.now().strftime("%Y-%V"),
+                "plans": {},
+                "tasks": {}
+            }
+            
+            # Добавляем задания орфографии (9-12)
+            empty_task = {
+                "stats": {"total": 0, "correct": 0, "streak": 0, "best_streak": 0},
+                "wrong_words": [],
+                "completed_words": []
+            }
+            
+            for i in range(9, 13):
+                data["tasks"][str(i)] = empty_task.copy()
+            
+            # Добавляем задания пунктуации (17-20)
+            for i in range(17, 21):
+                data["tasks"][str(i)] = empty_task.copy()
+            
+            # Сохраняем
+            save_data(data)
+            print("✅ Новая структура данных создана и сохранена")
+        
+        return data
+        
+    except Exception as e:
+        print(f"❌ Ошибка в load_data: {e}")
+        # Возвращаем минимальную структуру, чтобы бот не упал
+        return {
+            "last_reset": datetime.now().strftime("%Y-%V"),
+            "plans": {},
+            "tasks": {
+                "9": {"stats": {"total": 0, "correct": 0, "streak": 0, "best_streak": 0}, "wrong_words": [], "completed_words": []},
+                "10": {"stats": {"total": 0, "correct": 0, "streak": 0, "best_streak": 0}, "wrong_words": [], "completed_words": []},
+                "11": {"stats": {"total": 0, "correct": 0, "streak": 0, "best_streak": 0}, "wrong_words": [], "completed_words": []},
+                "12": {"stats": {"total": 0, "correct": 0, "streak": 0, "best_streak": 0}, "wrong_words": [], "completed_words": []},
+                "17": {"stats": {"total": 0, "correct": 0, "streak": 0, "best_streak": 0}, "wrong_words": [], "completed_words": []},
+                "18": {"stats": {"total": 0, "correct": 0, "streak": 0, "best_streak": 0}, "wrong_words": [], "completed_words": []},
+                "19": {"stats": {"total": 0, "correct": 0, "streak": 0, "best_streak": 0}, "wrong_words": [], "completed_words": []},
+                "20": {"stats": {"total": 0, "correct": 0, "streak": 0, "best_streak": 0}, "wrong_words": [], "completed_words": []}
+            }
+        }
 
 
 def save_data(data):
