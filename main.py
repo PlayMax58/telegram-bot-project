@@ -631,22 +631,22 @@ def global_answer_handler(m):
     t_data = data["tasks"][task_num]
     
     # 5. ОБРАБОТКА ТРЕНИРОВКИ
-    if mode == 'train':
-        # Получаем ответ пользователя (только цифры)
-        user_digits = ''.join([c for c in m.text if c.isdigit()])
-        user_answer = ''.join(sorted(set(user_digits)))
-        
-        correct_answer = state.get('correct_ans', '')
-        
-        # Обновляем статистику
-        t_data["stats"]["total"] += 1
-        
-        if user_answer == correct_answer:
-            t_data["stats"]["correct"] += 1
-            state['session_score'] = state.get('session_score', 0) + 1
-            bot.send_message(cid, "✅ Правильно!")
-        else:
-            bot.send_message(cid, f"❌ Ошибка! Правильный ответ: {correct_answer}")
+if mode == 'train':
+    # Получаем ответ пользователя (только цифры)
+    user_digits = ''.join([c for c in m.text if c.isdigit()])
+    user_answer = ''.join(sorted(set(user_digits)))
+    
+    correct_answer = state.get('correct_ans', '')
+    
+    # Обновляем статистику
+    t_data["stats"]["total"] += 1
+    
+    if user_answer == correct_answer:
+        t_data["stats"]["correct"] += 1
+        state['session_score'] = state.get('session_score', 0) + 1
+        bot.send_message(cid, "✅ Правильно!")
+    else:
+        bot.send_message(cid, f"❌ Ошибка! Правильный ответ: {correct_answer}")
         
         # Сохраняем
         save_data(data)
