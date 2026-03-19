@@ -197,52 +197,6 @@ def words_kb():
     markup.add("Играть", "Работа над ошибками", "Назад")
     return markup
 
-@bot.message_handler(func=lambda m: m.text == "Статистика")
-def stats_handler(m):
-    if m.chat.id not in user_state:
-        return bot.send_message(m.chat.id, "Сначала выберите задание!", reply_markup=main_kb())
-
-    num = user_state[m.chat.id]['task_num']
-    data = load_data()
-
-    # Проверяем наличие задания в данных
-    if num not in data["tasks"]:
-        # Создаём структуру с ВСЕМИ ключами
-        data["tasks"][num] = {
-            "stats": {
-                "total": 0,
-                "correct": 0,
-                "streak": 0,
-                "best_streak": 0
-            },
-            "wrong_words": [],
-            "completed_words": []
-        }
-        save_data(data)
-
-    t_data = data["tasks"][num]
-
-    # Дополнительная проверка структуры stats
-    if "best_streak" not in t_data["stats"]:
-        t_data["stats"]["best_streak"] = 0
-
-    total = t_data["stats"]["total"]
-    correct = t_data["stats"]["correct"]
-    perc = int(correct / total * 100) if total > 0 else 0
-    words_done = len(t_data.get("completed_words", []))
-
-    text = (f"📊 СТАТИСТИКА (Задание {num})\n"
-            f"──────────────────\n"
-            f"🎯 Тренировка (неделя):\n"
-            f"   • Решено: {total}\n"
-            f"   • Верно: {correct} ({perc}%)\n\n"
-            f"🧠 Режим «Слова»:\n"
-            f"   • Выучено: {words_done}\n"
-            f"   • Серия: {t_data['stats']['streak']} (Лучшая: {t_data['stats']['best_streak']})")
-
-    bot.send_message(m.chat.id, text)
-
-
 @bot.message_handler(func=lambda m: m.text == "Орфография")
 def ortho_main(m):
     bot.send_message(m.chat.id, "📂 Раздел ОРФОГРАФИЯ. Выбери задание:", reply_markup=ortho_kb())
@@ -301,14 +255,32 @@ def stats_handler(m):
 
     num = user_state[m.chat.id]['task_num']
     data = load_data()
-    t_data = data["tasks"].get(num)
 
-    if not t_data: return bot.send_message(m.chat.id, "Ошибка данных.")
+    # Проверяем наличие задания в данных
+    if num not in data["tasks"]:
+        # Создаём структуру с ВСЕМИ ключами
+        data["tasks"][num] = {
+            "stats": {
+                "total": 0,
+                "correct": 0,
+                "streak": 0,
+                "best_streak": 0
+            },
+            "wrong_words": [],
+            "completed_words": []
+        }
+        save_data(data)
+
+    t_data = data["tasks"][num]
+
+    # Дополнительная проверка структуры stats
+    if "best_streak" not in t_data["stats"]:
+        t_data["stats"]["best_streak"] = 0
 
     total = t_data["stats"]["total"]
     correct = t_data["stats"]["correct"]
     perc = int(correct / total * 100) if total > 0 else 0
-    words_done = len(t_data["completed_words"])
+    words_done = len(t_data.get("completed_words", []))
 
     text = (f"📊 СТАТИСТИКА (Задание {num})\n"
             f"──────────────────\n"
@@ -320,9 +292,6 @@ def stats_handler(m):
             f"   • Серия: {t_data['stats']['streak']} (Лучшая: {t_data['stats']['best_streak']})")
 
     bot.send_message(m.chat.id, text)
-
-punct.register_handlers(bot, user_state, load_data, save_data)
-
 # ==========================================
 # РЕЖИМ: ТРЕНИРОВКА
 # ==========================================
@@ -351,19 +320,23 @@ def train_start(m):
 
 def send_train_question(chat_id):
     state = user_state.get(chat_id)
-    if not state: return
-
+    if not state:
+        return
+    
     num = state['task_num']
     text, ans, full = generate_task(num)
-
-    # Сохраняем правильный ответ
+    
+    # Сохраняем правильный ответ и объяснение
     state['correct_ans'] = ans
     state['explanation'] = full
-
+    
+    # Сохраняем начальное количество для статистики
+    if 'initial_remaining' not in state:
+        state['initial_remaining'] = state.get('remaining', 0)
+    
     bot.send_message(chat_id,
                      f"📝 Задание №{num} (Осталось: {state['remaining']})\n\n{text}",
                      reply_markup=types.ReplyKeyboardRemove())
-
 
 # ==========================================
 # РЕЖИМ: СЛОВА (ИГРА И ОШИБКИ)
