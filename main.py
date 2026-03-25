@@ -720,12 +720,12 @@ def global_answer_handler(m):
     mode = state.get('mode')
 
     # Если режима нет (просто выбрано задание), ничего не делаем
-    if not mode: return
+    if not mode:
+        return
 
     data = load_data()
     task_num = state['task_num']
     
-    # ========== ДОБАВЛЯЕМ ПРОВЕРКУ ==========
     # Проверяем, есть ли задание в данных, если нет - создаём
     if task_num not in data["tasks"]:
         data["tasks"][task_num] = {
@@ -739,7 +739,6 @@ def global_answer_handler(m):
             "completed_words": []
         }
         save_data(data)
-    # =====================================
     
     t_data = data["tasks"][task_num]
 
