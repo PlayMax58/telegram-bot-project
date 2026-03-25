@@ -724,13 +724,21 @@ def global_answer_handler(m):
 
     data = load_data()
     task_num = state['task_num']
-    # Проверяем наличие задания в данных
-if task_num not in data["tasks"]:
-    print(f"⚠️ Задание {task_num} отсутствует в данных, создаю...")
-    data["tasks"][task_num] = {
-        "stats": {"total": 0, "correct": 0, "streak": 0, "best_streak": 0},
-        "wrong_words": [],
-        "completed_words": []
+        # ========== ДОБАВЛЯЕМ ПРОВЕРКУ ==========
+    # Проверяем, есть ли задание в данных, если нет - создаём
+    if task_num not in data["tasks"]:
+        data["tasks"][task_num] = {
+            "stats": {
+                "total": 0,
+                "correct": 0,
+                "streak": 0,
+                "best_streak": 0
+            },
+            "wrong_words": [],
+            "completed_words": []
+        }
+        save_data(data)
+    # =====================================
     }
     save_data(data)
 
