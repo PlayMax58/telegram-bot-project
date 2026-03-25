@@ -724,7 +724,8 @@ def global_answer_handler(m):
 
     data = load_data()
     task_num = state['task_num']
-        # ========== ДОБАВЛЯЕМ ПРОВЕРКУ ==========
+    
+    # ========== ДОБАВЛЯЕМ ПРОВЕРКУ ==========
     # Проверяем, есть ли задание в данных, если нет - создаём
     if task_num not in data["tasks"]:
         data["tasks"][task_num] = {
@@ -739,10 +740,8 @@ def global_answer_handler(m):
         }
         save_data(data)
     # =====================================
-    }
-    save_data(data)
-
-t_data = data["tasks"][task_num]
+    
+    t_data = data["tasks"][task_num]
 
     # --- ЛОГИКА ТРЕНИРОВКИ ---
     if mode == 'train':
