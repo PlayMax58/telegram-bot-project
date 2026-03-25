@@ -34,7 +34,81 @@ scheduler.start()
 # ==========================================
 def load_data():
     """Загружает данные с использованием кеша"""
-    return opt.load_stats()  # Вместо загрузки из файла каждый раз
+    try:
+        data = opt.load_stats()
+        
+        # Если данные пустые или нет ключа 'tasks' - создаем структуру
+        if not data or 'tasks' not in data:
+            print("⚠️ Данные повреждены или отсутствуют, создаю новую структуру")
+            data = create_default_data()
+            save_data(data)
+            print("✅ Новая структура данных создана и сохранена")
+            return data
+        
+        # Проверяем наличие всех заданий (9-12 и 17-20)
+        empty_task = {
+            "stats": {"total": 0, "correct": 0, "streak": 0, "best_streak": 0},
+            "wrong_words": [],
+            "completed_words": []
+        }
+        
+        # Проверяем задания орфографии (9-12)
+        for i in range(9, 13):
+            if str(i) not in data["tasks"]:
+                print(f"⚠️ Задание {i} отсутствует, добавляю...")
+                data["tasks"][str(i)] = empty_task.copy()
+        
+        # Проверяем задания пунктуации (17-20)
+        for i in range(17, 21):
+            if str(i) not in data["tasks"]:
+                print(f"⚠️ Задание {i} отсутствует, добавляю...")
+                data["tasks"][str(i)] = empty_task.copy()
+        
+        # Проверяем наличие других ключей
+        if "plans" not in data:
+            data["plans"] = {}
+        
+        if "last_reset" not in data:
+            from datetime import datetime
+            data["last_reset"] = datetime.now().strftime("%Y-%V")
+        
+        # Сохраняем, если что-то добавили
+        save_data(data)
+        
+        return data
+        
+    except Exception as e:
+        print(f"❌ Ошибка в load_data: {e}")
+        import traceback
+        traceback.print_exc()
+        return create_default_data()
+
+
+def create_default_data():
+    """Создаёт структуру данных по умолчанию"""
+    from datetime import datetime
+    
+    empty_task = {
+        "stats": {"total": 0, "correct": 0, "streak": 0, "best_streak": 0},
+        "wrong_words": [],
+        "completed_words": []
+    }
+    
+    data = {
+        "last_reset": datetime.now().strftime("%Y-%V"),
+        "plans": {},
+        "tasks": {}
+    }
+    
+    # Добавляем задания орфографии (9-12)
+    for i in range(9, 13):
+        data["tasks"][str(i)] = empty_task.copy()
+    
+    # Добавляем задания пунктуации (17-20)
+    for i in range(17, 21):
+        data["tasks"][str(i)] = empty_task.copy()
+    
+    return data
 
 
 def save_data(data):
@@ -650,7 +724,17 @@ def global_answer_handler(m):
 
     data = load_data()
     task_num = state['task_num']
-    t_data = data["tasks"][task_num]
+    # Проверяем наличие задания в данных
+if task_num not in data["tasks"]:
+    print(f"⚠️ Задание {task_num} отсутствует в данных, создаю...")
+    data["tasks"][task_num] = {
+        "stats": {"total": 0, "correct": 0, "streak": 0, "best_streak": 0},
+        "wrong_words": [],
+        "completed_words": []
+    }
+    save_data(data)
+
+t_data = data["tasks"][task_num]
 
     # --- ЛОГИКА ТРЕНИРОВКИ ---
     if mode == 'train':
