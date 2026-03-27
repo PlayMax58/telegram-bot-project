@@ -32,88 +32,89 @@ scheduler.start()
 # ==========================================
 # СИСТЕМА ДАННЫХ (ЗАГРУЗКА И СОХРАНЕНИЕ)
 # ==========================================
-def load_data():
-    """Загружает данные с использованием кеша"""
-    try:
-        data = opt.load_stats()
-        
-        # Если данные пустые или нет ключа 'tasks' - создаем структуру
-        if not data or 'tasks' not in data:
-            print("⚠️ Данные повреждены или отсутствуют, создаю новую структуру")
-            data = create_default_data()
-            save_data(data)
-            print("✅ Новая структура данных создана и сохранена")
-            return data
-        
-        # Проверяем наличие всех заданий (9-12 и 17-20)
-        empty_task = {
-            "stats": {"total": 0, "correct": 0, "streak": 0, "best_streak": 0},
-            "wrong_words": [],
-            "completed_words": []
-        }
-        
-        # Проверяем задания орфографии (9-12)
-        for i in range(9, 13):
-            if str(i) not in data["tasks"]:
-                print(f"⚠️ Задание {i} отсутствует, добавляю...")
-                data["tasks"][str(i)] = empty_task.copy()
-        
-        # Проверяем задания пунктуации (17-20)
-        for i in range(17, 21):
-            if str(i) not in data["tasks"]:
-                print(f"⚠️ Задание {i} отсутствует, добавляю...")
-                data["tasks"][str(i)] = empty_task.copy()
-        
-        # Проверяем наличие других ключей
-        if "plans" not in data:
-            data["plans"] = {}
-        
-        if "last_reset" not in data:
-            from datetime import datetime
-            data["last_reset"] = datetime.now().strftime("%Y-%V")
-        
-        # Сохраняем, если что-то добавили
-        save_data(data)
-        
-        return data
-        
-    except Exception as e:
-        print(f"❌ Ошибка в load_data: {e}")
-        import traceback
-        traceback.print_exc()
-        return create_default_data()
+EMPTY_TASK = {
+    "stats": {"total": 0, "correct": 0, "streak": 0, "best_streak": 0},
+    "wrong_words": [],
+    "completed_words": []
+}
+TASK_NUMS = [str(i) for i in list(range(9, 13)) + list(range(17, 21))]
 
 
-def create_default_data():
-    """Создаёт структуру данных по умолчанию"""
-    from datetime import datetime
-    
-    empty_task = {
-        "stats": {"total": 0, "correct": 0, "streak": 0, "best_streak": 0},
-        "wrong_words": [],
-        "completed_words": []
+def _make_user_data():
+    """Создаёт чистую структуру для одного пользователя"""
+    import copy
+    return {
+        "tasks": {t: copy.deepcopy(EMPTY_TASK) for t in TASK_NUMS},
+        "plans": {}
     }
-    
-    data = {
-        "last_reset": datetime.now().strftime("%Y-%V"),
-        "plans": {},
-        "tasks": {}
-    }
-    
-    # Добавляем задания орфографии (9-12)
-    for i in range(9, 13):
-        data["tasks"][str(i)] = empty_task.copy()
-    
-    # Добавляем задания пунктуации (17-20)
-    for i in range(17, 21):
-        data["tasks"][str(i)] = empty_task.copy()
-    
+
+
+def _ensure_user(data: dict, uid: str) -> dict:
+    """Гарантирует наличие корректной структуры для пользователя uid"""
+    import copy
+    if uid not in data:
+        data[uid] = _make_user_data()
+    u = data[uid]
+    if "tasks" not in u:
+        u["tasks"] = {}
+    if "plans" not in u:
+        u["plans"] = {}
+    for t in TASK_NUMS:
+        if t not in u["tasks"]:
+            u["tasks"][t] = copy.deepcopy(EMPTY_TASK)
+        td = u["tasks"][t]
+        if "stats" not in td:
+            td["stats"] = {"total": 0, "correct": 0, "streak": 0, "best_streak": 0}
+        else:
+            for k in ("total", "correct", "streak", "best_streak"):
+                td["stats"].setdefault(k, 0)
+        td.setdefault("wrong_words", [])
+        td.setdefault("completed_words", [])
     return data
 
 
-def save_data(data):
-    """Сохраняет данные с обновлением кеша"""
-    opt.save_stats(data)  # Вместо прямой записи в файл
+def load_data(uid: str = None):
+    """
+    Загружает данные.
+    Если uid задан — возвращает данные конкретного пользователя (dict с ключами tasks/plans).
+    Если uid=None — возвращает весь файл (нужно только для планов при старте).
+    """
+    try:
+        data = opt.load_stats()
+        if not isinstance(data, dict):
+            data = {}
+
+        # Миграция старого формата (когда был один глобальный tasks/plans)
+        if "tasks" in data and "plans" in data and not any(k.isdigit() for k in data):
+            print("⚠️ Обнаружен старый формат данных — миграция невозможна, сброс.")
+            data = {}
+            save_data(data)
+
+        if uid is not None:
+            data = _ensure_user(data, uid)
+            save_data(data)
+            return data[uid]
+
+        return data
+
+    except Exception as e:
+        print(f"❌ Ошибка в load_data: {e}")
+        import traceback; traceback.print_exc()
+        if uid is not None:
+            return _make_user_data()
+        return {}
+
+
+def save_data(data: dict):
+    """Сохраняет весь файл данных"""
+    opt.save_stats(data)
+
+
+def save_user_data(uid: str, user_data: dict):
+    """Сохраняет данные одного пользователя"""
+    data = load_data()
+    data[uid] = user_data
+    save_data(data)
 
 
 # ==========================================
@@ -263,44 +264,30 @@ def punct_choice_kb():
 
 def task_kb():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add("Тренировка", "Слова", "Статистика", "⬅️ Назад к заданиям")
+    markup.add("Тренировка", "Блиц", "Статистика", "⬅️ Назад к заданиям")
     return markup
 
 
 def words_kb():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add("Играть", "Работа над ошибками", "Назад")
+    markup.add("Играть", "Работа над ошибками", "⬅️ Назад к заданиям")
     return markup
 
 @bot.message_handler(func=lambda m: m.text == "Статистика")
 def stats_handler(m):
-    if m.chat.id not in user_state:
-        return bot.send_message(m.chat.id, "Сначала выберите задание!", reply_markup=main_kb())
+    cid = m.chat.id
+    if cid not in user_state:
+        return bot.send_message(cid, "Сначала выберите задание!", reply_markup=main_kb())
 
-    num = user_state[m.chat.id]['task_num']
-    data = load_data()
+    num = user_state[cid].get('task_num')
+    if not num:
+        return bot.send_message(cid, "Сначала выберите задание!", reply_markup=main_kb())
 
-    # Проверяем наличие задания в данных
-    if num not in data["tasks"]:
-        # Создаём структуру с ВСЕМИ ключами
-        data["tasks"][num] = {
-            "stats": {
-                "total": 0,
-                "correct": 0,
-                "streak": 0,
-                "best_streak": 0
-            },
-            "wrong_words": [],
-            "completed_words": []
-        }
-        save_data(data)
+    if num in ['17', '18', '19', '20']:
+        return  # обрабатывается в punct.py
 
-    t_data = data["tasks"][num]
-
-    # Дополнительная проверка структуры stats
-    if "best_streak" not in t_data["stats"]:
-        t_data["stats"]["best_streak"] = 0
-
+    u = load_data(str(cid))
+    t_data = u["tasks"][num]
     total = t_data["stats"]["total"]
     correct = t_data["stats"]["correct"]
     perc = int(correct / total * 100) if total > 0 else 0
@@ -308,14 +295,14 @@ def stats_handler(m):
 
     text = (f"📊 СТАТИСТИКА (Задание {num})\n"
             f"──────────────────\n"
-            f"🎯 Тренировка (неделя):\n"
+            f"🎯 Тренировка:\n"
             f"   • Решено: {total}\n"
             f"   • Верно: {correct} ({perc}%)\n\n"
-            f"🧠 Режим «Слова»:\n"
+            f"⚡ Блиц:\n"
             f"   • Выучено: {words_done}\n"
-            f"   • Серия: {t_data['stats']['streak']} (Лучшая: {t_data['stats']['best_streak']})")
+            f"   • Серия: {t_data['stats'].get('streak', 0)} (Лучшая: {t_data['stats'].get('best_streak', 0)})")
 
-    bot.send_message(m.chat.id, text)
+    bot.send_message(cid, text)
 
 
 @bot.message_handler(func=lambda m: m.text == "Орфография")
@@ -334,69 +321,27 @@ def sel_t(m):
     bot.send_message(m.chat.id, f"🎯 Выбрано задание {num}", reply_markup=task_kb())
 
 @bot.message_handler(func=lambda m: m.text == "⬅️ Назад к заданиям")
-def back_to_ortho(m):
-    # Проверяем, из какого раздела пришёл пользователь
-    if m.chat.id in user_state and user_state[m.chat.id].get('task_num') in ['17','18','19','20']:
-        # Возвращаемся в пунктуацию
-        bot.send_message(m.chat.id, "Выбери задание:", reply_markup=punct_choice_kb())
+def back_to_tasks(m):
+    cid = m.chat.id
+    # Сбрасываем режим если был
+    if cid in user_state:
+        user_state[cid].pop('mode', None)
+    task_num = user_state.get(cid, {}).get('task_num')
+    if task_num in ['17', '18', '19', '20']:
+        bot.send_message(cid, "Выбери задание:", reply_markup=punct_choice_kb())
     else:
-        # Возвращаемся в орфографию
-        bot.send_message(m.chat.id, "Выбери задание:", reply_markup=ortho_kb())
+        bot.send_message(cid, "Выбери задание:", reply_markup=ortho_kb())
 
 
-# --- ВЫБОР ЗАДАНИЯ ---
+# --- ВЫБОР ЗАДАНИЯ ОРФОГРАФИИ ---
 @bot.message_handler(func=lambda m: m.text in ["Задание 9", "Задание 10", "Задание 11", "Задание 12"])
 def menu_task_select(m):
-    task_num = m.text.split()[1]  # "9" или "10"
+    task_num = m.text.split()[1]
     user_state[m.chat.id] = {'task_num': task_num}
     bot.send_message(m.chat.id, f"✅ Выбрано задание {task_num}.\nЧто будем делать?", reply_markup=task_kb())
 
 
-@bot.message_handler(func=lambda m: m.text == "Назад")
-def back_handler(m):
-    # Если мы в подменю (слова), возвращаемся в меню задания
-    if m.chat.id in user_state and 'mode' in user_state[m.chat.id]:
-        # Сбрасываем режим, но оставляем номер задания
-        del user_state[m.chat.id]['mode']
-        bot.send_message(m.chat.id, "Меню задания:", reply_markup=task_kb())
-    else:
-        # Иначе в главное меню
-        if m.chat.id in user_state: del user_state[m.chat.id]
-        bot.send_message(m.chat.id, "Главное меню:", reply_markup=main_kb())
-
-
-
-# ==========================================
-# СТАТИСТИКА
-# ==========================================
-@bot.message_handler(func=lambda m: m.text == "Статистика")
-def stats_handler(m):
-    if m.chat.id not in user_state:
-        return bot.send_message(m.chat.id, "Сначала выберите задание!", reply_markup=main_kb())
-
-    num = user_state[m.chat.id]['task_num']
-    data = load_data()
-    t_data = data["tasks"].get(num)
-
-    if not t_data: return bot.send_message(m.chat.id, "Ошибка данных.")
-
-    total = t_data["stats"]["total"]
-    correct = t_data["stats"]["correct"]
-    perc = int(correct / total * 100) if total > 0 else 0
-    words_done = len(t_data["completed_words"])
-
-    text = (f"📊 СТАТИСТИКА (Задание {num})\n"
-            f"──────────────────\n"
-            f"🎯 Тренировка (неделя):\n"
-            f"   • Решено: {total}\n"
-            f"   • Верно: {correct} ({perc}%)\n\n"
-            f"🧠 Режим «Слова»:\n"
-            f"   • Выучено: {words_done}\n"
-            f"   • Серия: {t_data['stats']['streak']} (Лучшая: {t_data['stats']['best_streak']})")
-
-    bot.send_message(m.chat.id, text)
-
-punct.register_handlers(bot, user_state, load_data, save_data)
+punct.register_handlers(bot, user_state, load_data, save_user_data)
 
 # ==========================================
 # РЕЖИМ: ТРЕНИРОВКА
@@ -419,7 +364,9 @@ def train_start(m):
     user_state[m.chat.id].update({
         'mode': 'train',
         'remaining': count,
-        'session_score': 0
+        'total_count': count,
+        'session_score': 0,
+        'instruction_shown': False
     })
     send_train_question(m.chat.id)
 
@@ -431,72 +378,79 @@ def send_train_question(chat_id):
     num = state['task_num']
     text, ans, full = generate_task(num)
 
-    # Сохраняем правильный ответ
     state['correct_ans'] = ans
     state['explanation'] = full
 
+    total = state.get('total_count', state['remaining'])
+    done = total - state['remaining'] + 1
+
+    if not state.get('instruction_shown'):
+        instruction = "📌 Укажи номера рядов, в которых во всех словах пропущена одна и та же буква. Введи цифры слитно, например: 134\n\n"
+        state['instruction_shown'] = True
+    else:
+        instruction = ""
+
     bot.send_message(chat_id,
-                     f"📝 Задание №{num} (Осталось: {state['remaining']})\n\n{text}",
+                     f"📝 Задание №{num}  [{done} из {total}]\n"
+                     f"{instruction}{text}",
                      reply_markup=types.ReplyKeyboardRemove())
 
 
 # ==========================================
-# РЕЖИМ: СЛОВА (ИГРА И ОШИБКИ)
+# РЕЖИМ: БЛИЦ (ИГРА И ОШИБКИ)
 # ==========================================
-@bot.message_handler(func=lambda m: m.text == "Слова")
+@bot.message_handler(func=lambda m: m.text == "Блиц")
 def words_init(m):
     if m.chat.id not in user_state: return bot.send_message(m.chat.id, "Выберите задание!")
-    bot.send_message(m.chat.id, "Режим запоминания слов.", reply_markup=words_kb())
+    bot.send_message(m.chat.id, "⚡ Режим Блиц — угадай пропущенную букву!", reply_markup=words_kb())
 
 
 @bot.message_handler(func=lambda m: m.text == "Играть")
 def game_start(m):
-    if m.chat.id not in user_state: return
+    cid = m.chat.id
+    if cid not in user_state: return
 
-    num = user_state[m.chat.id]['task_num']
-    data = load_data()
+    num = user_state[cid]['task_num']
+    u = load_data(str(cid))
 
-    # Загружаем слова
     _, plain_list = load_words(num)
-    if not plain_list: return bot.send_message(m.chat.id, f"Файл words{num}.txt пуст!")
+    if not plain_list: return bot.send_message(cid, f"Файл words{num}.txt пуст!")
 
-    # Фильтруем уже выученные
-    completed = data["tasks"][num]["completed_words"]
+    completed = u["tasks"][num]["completed_words"]
     available = [w for w in plain_list if w['hidden'] not in completed]
 
     if not available:
-        # Сброс, если все выучил
-        data["tasks"][num]["completed_words"] = []
-        save_data(data)
-        bot.send_message(m.chat.id, "🏆 Ты прошел весь словарь! Начинаем заново.")
+        u["tasks"][num]["completed_words"] = []
+        save_user_data(str(cid), u)
+        bot.send_message(cid, "🏆 Ты прошел весь словарь! Начинаем заново.")
         available = plain_list
 
     target = random.choice(available)
-    user_state[m.chat.id].update({
+    first = user_state[cid].get('blitz_instruction_shown', False)
+    user_state[cid].update({
         'mode': 'word_game',
-        'word_obj': target
+        'word_obj': target,
+        'blitz_instruction_shown': True
     })
 
-    bot.send_message(m.chat.id, f"Вставь пропущенную букву:\n\n{target['hidden']}",
-                     reply_markup=types.ReplyKeyboardRemove())
+    instruction = "" if first else "📌 Введи пропущенную букву (одну):\n\n"
+    bot.send_message(cid, f"{instruction}{target['hidden']}", reply_markup=types.ReplyKeyboardRemove())
 
 
 @bot.message_handler(func=lambda m: m.text == "Работа над ошибками")
 def correction_start(m):
-    if m.chat.id not in user_state: return
-    num = user_state[m.chat.id]['task_num']
-    data = load_data()
+    cid = m.chat.id
+    if cid not in user_state: return
+    num = user_state[cid]['task_num']
+    u = load_data(str(cid))
 
-    wrong_list = data["tasks"][num]["wrong_words"]
+    wrong_list = u["tasks"][num]["wrong_words"]
     if not wrong_list:
-        return bot.send_message(m.chat.id, "✅ Список ошибок пуст! Молодец.", reply_markup=words_kb())
+        return bot.send_message(cid, "✅ Список ошибок пуст! Молодец.", reply_markup=words_kb())
 
     target = random.choice(wrong_list)
-    user_state[m.chat.id].update({
-        'mode': 'correction',
-        'word_obj': target
-    })
-    bot.send_message(m.chat.id, f"Исправь ошибку:\n\n{target['hidden']}", reply_markup=types.ReplyKeyboardRemove())
+    user_state[cid].update({'mode': 'correction', 'word_obj': target})
+    bot.send_message(cid, f"Исправь ошибку:\n\n{target['hidden']}", reply_markup=types.ReplyKeyboardRemove())
 
 
 # ==========================================
@@ -538,14 +492,14 @@ def p4_finish(m, task_num, count):
 
         time_formatted = f"{hour:02d}:{minute:02d}"
 
-        # Сохранение в базу
-        data = load_data()
-        data["plans"][str(m.chat.id)] = {
+        # Сохранение плана в данные пользователя
+        u = load_data(str(m.chat.id))
+        u["plans"][str(m.chat.id)] = {
             "time": time_formatted,
             "count": count,
             "task": task_num
         }
-        save_data(data)
+        save_user_data(str(m.chat.id), u)
 
         # Настройка планировщика
         job_id = f"job_{m.chat.id}"
@@ -679,15 +633,14 @@ def execute_plan(chat_id, count, task_num):
 @bot.message_handler(func=lambda m: m.text == "Удалить план")
 def del_plan(m):
     """Удаляет план пользователя"""
-    data = load_data()
     cid = str(m.chat.id)
+    u = load_data(cid)
 
-    if cid in data["plans"]:
-        plan = data["plans"][cid]
+    if cid in u.get("plans", {}):
+        plan = u["plans"][cid]
         task_type = "пунктуация" if plan['task'] in ['17', '18', '19', '20'] else "орфография"
-
-        del data["plans"][cid]
-        save_data(data)
+        del u["plans"][cid]
+        save_user_data(cid, u)
 
         job_id = f"job_{cid}"
         if scheduler.get_job(job_id):
@@ -719,32 +672,16 @@ def global_answer_handler(m):
     state = user_state[cid]
     mode = state.get('mode')
 
-    # Если режима нет (просто выбрано задание), ничего не делаем
     if not mode:
         return
 
-    data = load_data()
+    uid = str(cid)
+    u = load_data(uid)
     task_num = state['task_num']
-    
-    # Проверяем, есть ли задание в данных, если нет - создаём
-    if task_num not in data["tasks"]:
-        data["tasks"][task_num] = {
-            "stats": {
-                "total": 0,
-                "correct": 0,
-                "streak": 0,
-                "best_streak": 0
-            },
-            "wrong_words": [],
-            "completed_words": []
-        }
-        save_data(data)
-    
-    t_data = data["tasks"][task_num]
+    t_data = u["tasks"][task_num]
 
     # --- ЛОГИКА ТРЕНИРОВКИ ---
     if mode == 'train':
-        # Оставляем только цифры
         user_ans = "".join(sorted(set(filter(str.isdigit, m.text))))
 
         t_data["stats"]["total"] += 1
@@ -757,18 +694,17 @@ def global_answer_handler(m):
             bot.send_message(cid,
                              f"❌ Ошибка!\nПравильный ответ: {state['correct_ans']}\n\nРазбор:\n{state['explanation']}")
 
-        save_data(data)
+        save_user_data(uid, u)
 
-        # Следующий вопрос или конец
         state['remaining'] -= 1
         if state['remaining'] > 0:
             send_train_question(cid)
         else:
-            bot.send_message(cid, f"🏁 Тренировка окончена.\nРезультат: {state['session_score']}",
+            bot.send_message(cid, f"🏁 Тренировка окончена.\nРезультат: {state['session_score']} из {state['total_count']}",
                              reply_markup=task_kb())
-            del state['mode']  # Выходим из режима тренировки
+            del state['mode']
 
-    # --- ЛОГИКА ИГРЫ И РАБОТЫ НАД ОШИБКАМИ ---
+    # --- ЛОГИКА БЛИЦА И РАБОТЫ НАД ОШИБКАМИ ---
     elif mode in ['word_game', 'correction']:
         user_char = m.text.strip().lower()
         target_obj = state['word_obj']
@@ -777,23 +713,17 @@ def global_answer_handler(m):
             bot.send_message(cid, "✅ Верно!")
 
             if mode == 'word_game':
-                # Увеличиваем серию
                 t_data["stats"]["streak"] += 1
                 if t_data["stats"]["streak"] > t_data["stats"]["best_streak"]:
                     t_data["stats"]["best_streak"] = t_data["stats"]["streak"]
-
-                # Добавляем в выученные
                 if target_obj['hidden'] not in t_data["completed_words"]:
                     t_data["completed_words"].append(target_obj['hidden'])
-
-                save_data(data)
-                game_start(m)  # Следующее слово
+                save_user_data(uid, u)
+                game_start(m)
 
             else:  # correction
-                # Удаляем из ошибок (сравнение по hidden слову)
-                new_wrong = [w for w in t_data["wrong_words"] if w['hidden'] != target_obj['hidden']]
-                t_data["wrong_words"] = new_wrong
-                save_data(data)
+                t_data["wrong_words"] = [w for w in t_data["wrong_words"] if w['hidden'] != target_obj['hidden']]
+                save_user_data(uid, u)
                 bot.send_message(cid, "Слово исправлено!", reply_markup=words_kb())
                 del state['mode']
 
@@ -801,15 +731,10 @@ def global_answer_handler(m):
             bot.send_message(cid, f"❌ Ошибка! Правильно: {target_obj['full']}")
 
             if mode == 'word_game':
-                # Сброс серии
                 t_data["stats"]["streak"] = 0
-
-                # Добавляем в ошибки (если еще нет)
-                is_exist = any(w['hidden'] == target_obj['hidden'] for w in t_data["wrong_words"])
-                if not is_exist:
+                if not any(w['hidden'] == target_obj['hidden'] for w in t_data["wrong_words"]):
                     t_data["wrong_words"].append(target_obj)
-
-                save_data(data)
+                save_user_data(uid, u)
                 bot.send_message(cid, "Серия прервана. Слово ушло в «Работу над ошибками».", reply_markup=words_kb())
                 del state['mode']
             else:
@@ -824,14 +749,17 @@ import time
 
 if __name__ == '__main__':
     try:
-        d = load_data()
-        for uid, p in d["plans"].items():
-            try:
-                h, mn = p["time"].split(":")
-                scheduler.add_job(execute_plan, 'cron', hour=h, minute=mn,
-                                  args=[int(uid), p['count'], p['task']],
-                                  id=f"job_{uid}")
-            except: continue
+        all_data = load_data()
+        for uid, u in all_data.items():
+            plans = u.get("plans", {}) if isinstance(u, dict) else {}
+            for plan_uid, p in plans.items():
+                try:
+                    h, mn = p["time"].split(":")
+                    scheduler.add_job(execute_plan, 'cron', hour=h, minute=mn,
+                                      args=[int(uid), p['count'], p['task']],
+                                      id=f"job_{uid}")
+                except Exception as e:
+                    print(f"Ошибка восстановления плана {uid}: {e}")
     except Exception as e:
         print(f"Ошибка планов: {e}")
 
