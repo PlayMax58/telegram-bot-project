@@ -1,374 +1,443 @@
-# optimization.py
-# Модуль с оптимизациями для ускорения работы бота
+# punct.py
+# Модуль для обработки заданий по пунктуации (17-20) для Telegram-бота ЕГЭ
 
-import json
+from telebot import types
+import random
 import os
-import time
-from functools import lru_cache
-from typing import Any, Dict, List, Optional, Tuple, Union
+from optimization import get_optimization
+
+opt = get_optimization()
+__all__ = ['register_handlers', 'send_punct_question']
+
+# Глобальные переменные, устанавливаемые через register_handlers
+_bot = None
+_user_state = None
+_load_data = None
+_save_data = None
+
 
 # ==========================================
-# 1. БЫСТРЫЙ JSON (пытаемся использовать ujson или orjson)
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ==========================================
 
-# Пробуем импортировать быстрые JSON библиотеки
-_USE_FAST_JSON = False
-try:
-    import ujson as fast_json
+def ensure_task_data(data, task_num):
+    """Гарантирует наличие структуры данных для задания с ВСЕМИ ключами"""
+    task_num = str(task_num)
+    if "tasks" not in data:
+        data["tasks"] = {}
 
-    _USE_FAST_JSON = True
-    _JSON_LIB = "ujson"
-except ImportError:
-    try:
-        import orjson as fast_json
-
-        _USE_FAST_JSON = True
-        _JSON_LIB = "orjson"
-    except ImportError:
-        _JSON_LIB = "standard"
-
-print(f"[Optimization] Используется JSON библиотека: {_JSON_LIB}")
-
-
-def json_dumps(data: Any, **kwargs) -> str:
-    """Быстрый дамп JSON"""
-    if _USE_FAST_JSON and _JSON_LIB == "orjson":
-        return fast_json.dumps(data).decode()
-    elif _USE_FAST_JSON and _JSON_LIB == "ujson":
-        return fast_json.dumps(data, **kwargs)
+    # Базовая структура с ВСЕМИ ключами
+    if task_num not in data["tasks"]:
+        data["tasks"][task_num] = {
+            "stats": {
+                "total": 0,
+                "correct": 0,
+                "streak": 0,
+                "best_streak": 0
+            },
+            "wrong_words": [],
+            "completed_words": []
+        }
     else:
-        return json.dumps(data, ensure_ascii=False, indent=kwargs.get('indent', None))
+        # Проверяем наличие всех ключей
+        if "stats" not in data["tasks"][task_num]:
+            data["tasks"][task_num]["stats"] = {
+                "total": 0,
+                "correct": 0,
+                "streak": 0,
+                "best_streak": 0
+            }
+        else:
+            # Проверяем каждый ключ в stats
+            stats = data["tasks"][task_num]["stats"]
+            if "total" not in stats:
+                stats["total"] = 0
+            if "correct" not in stats:
+                stats["correct"] = 0
+            if "streak" not in stats:
+                stats["streak"] = 0
+            if "best_streak" not in stats:
+                stats["best_streak"] = 0
+
+        if "wrong_words" not in data["tasks"][task_num]:
+            data["tasks"][task_num]["wrong_words"] = []
+        if "completed_words" not in data["tasks"][task_num]:
+            data["tasks"][task_num]["completed_words"] = []
+
+    return data
 
 
-def json_loads(data: Union[str, bytes], **kwargs) -> Any:
-    """Быстрая загрузка JSON"""
-    if _USE_FAST_JSON:
-        return fast_json.loads(data)
-    else:
-        return json.loads(data, **kwargs)
+def load_punct_words(task_num):
+    """Загружает предложения с использованием кеша"""
+    filename = f'punct{task_num}.txt'
+    return opt.load_words_file(filename)
 
 
-# ==========================================
-# 2. КЕШ ДЛЯ STATS.JSON
-# ==========================================
-
-class StatsCache:
-    """Кеш для stats.json с автоматической инвалидацией"""
-
-    def __init__(self, stats_file: str, cache_ttl: int = 5):
-        self.stats_file = stats_file
-        self.cache_ttl = cache_ttl  # время жизни кеша в секундах
-        self._cache = None
-        self._last_load_time = 0
-        self._last_file_mtime = 0
-        self._save_pending = False
-        self._dirty = False  # были ли изменения после последнего сохранения
-
-    def load(self, force_reload: bool = False) -> Dict:
-        """Загружает данные с использованием кеша"""
-        current_time = time.time()
-
-        # Проверяем, нужно ли перезагрузить
-        if not force_reload and self._cache is not None:
-            # Если есть ожидающие сохранения изменения, возвращаем кеш
-            if self._dirty:
-                return self._cache
-
-            # Проверяем время жизни кеша
-            if current_time - self._last_load_time < self.cache_ttl:
-                return self._cache
-
-            # Проверяем, изменился ли файл
-            if os.path.exists(self.stats_file):
-                file_mtime = os.path.getmtime(self.stats_file)
-                if file_mtime <= self._last_file_mtime:
-                    return self._cache
-
-        # Загружаем данные из файла
-        try:
-            if os.path.exists(self.stats_file):
-                with open(self.stats_file, 'r', encoding='utf-8') as f:
-                    self._cache = json_loads(f.read())
-                self._last_file_mtime = os.path.getmtime(self.stats_file)
-            else:
-                self._cache = {}
-
-            self._last_load_time = current_time
-            self._dirty = False
-        except Exception as e:
-            print(f"[Optimization] Ошибка загрузки stats.json: {e}")
-            if self._cache is None:
-                self._cache = {}
-
-        return self._cache
-
-    def save(self, data: Dict) -> bool:
-        """Сохраняет данные и обновляет кеш"""
-        try:
-            # Создаём директорию, если нужно
-            os.makedirs(os.path.dirname(os.path.abspath(self.stats_file)) or '.', exist_ok=True)
-
-            # Сохраняем в файл
-            with open(self.stats_file, 'w', encoding='utf-8') as f:
-                f.write(json_dumps(data, indent=4))
-
-            # Обновляем кеш
-            self._cache = data
-            self._last_load_time = time.time()
-            self._last_file_mtime = os.path.getmtime(self.stats_file)
-            self._dirty = False
-            return True
-        except Exception as e:
-            print(f"[Optimization] Ошибка сохранения stats.json: {e}")
-            return False
-
-    def mark_dirty(self):
-        """Помечает, что данные были изменены, но ещё не сохранены"""
-        self._dirty = True
-
-    def clear(self):
-        """Очищает кеш"""
-        self._cache = None
-        self._last_load_time = 0
-        self._last_file_mtime = 0
-        self._dirty = False
-
-
-# ==========================================
-# 3. КЕШ ДЛЯ ФАЙЛОВ СО СЛОВАМИ
-# ==========================================
-
-class WordsFileCache:
-    """Кеш для текстовых файлов со словами/предложениями"""
-
-    def __init__(self, max_cache_size: int = 10):
-        self.cache = {}  # {filename: (mtime, data)}
-        self.max_cache_size = max_cache_size
-        self.access_times = {}  # для LRU
-
-    def get(self, filename: str, loader_func=None) -> Optional[Any]:
-        """Получает данные из кеша или загружает через loader_func"""
-        current_time = time.time()
-
-        # Обновляем время доступа
-        self.access_times[filename] = current_time
-
-        # Проверяем наличие в кеше
-        if filename in self.cache:
-            cache_time, cache_data = self.cache[filename]
-            # Проверяем, не изменился ли файл
-            if os.path.exists(filename):
-                file_mtime = os.path.getmtime(filename)
-                if file_mtime <= cache_time:
-                    return cache_data
-
-        # Если нет в кеше или файл изменился, загружаем
-        if loader_func:
-            data = loader_func(filename)
-            if data is not None:
-                # Добавляем в кеш
-                self._add_to_cache(filename, data, current_time)
-            return data
-
+def generate_from_sentence(full_sentence):
+    """
+    Преобразует полное предложение (с запятыми) в задание с цифрами.
+    Возвращает (hidden_text, answer_code, full_sentence) или None, если не удалось.
+    """
+    if not full_sentence:
         return None
 
-    def _add_to_cache(self, filename: str, data: Any, current_time: float):
-        """Добавляет данные в кеш с LRU вытеснением"""
-        # Если кеш переполнен, удаляем самый старый по доступу
-        if len(self.cache) >= self.max_cache_size:
-            # Находим самый старый файл
-            oldest = min(self.access_times.items(), key=lambda x: x[1])
-            del self.cache[oldest[0]]
-            del self.access_times[oldest[0]]
+    # Разбиваем по пробелам, сохраняя знаки при словах
+    parts = full_sentence.split(' ')
+    words = []
+    comma_after = []  # True, если после слова была запятая
+    for part in parts:
+        if part.endswith(','):
+            words.append(part[:-1])  # убираем запятую
+            comma_after.append(True)
+        else:
+            words.append(part)
+            comma_after.append(False)
 
-        # Добавляем новый
-        file_mtime = os.path.getmtime(filename) if os.path.exists(filename) else current_time
-        self.cache[filename] = (file_mtime, data)
+    num_spaces = len(words) - 1
+    if num_spaces < 5:
+        # Нельзя разместить 5 цифр – предложение слишком короткое
+        return None
 
-    def clear(self):
-        """Очищает кеш"""
-        self.cache.clear()
-        self.access_times.clear()
+    # Индексы пробелов (от 0 до num_spaces-1)
+    all_indices = list(range(num_spaces))
+    correct_indices = [i for i in range(num_spaces) if comma_after[i]]
 
+    if len(correct_indices) > 5:
+        return None  # слишком много правильных ответов
 
-# ==========================================
-# 4. ДЕКОРАТОР ДЛЯ КЕШИРОВАНИЯ ФУНКЦИЙ
-# ==========================================
-
-def cached(ttl_seconds: int = 60):
-    """Декоратор для кеширования результатов функций"""
-
-    def decorator(func):
-        cache = {}
-
-        def wrapper(*args, **kwargs):
-            key = str(args) + str(sorted(kwargs.items()))
-            current_time = time.time()
-
-            if key in cache:
-                result, timestamp = cache[key]
-                if current_time - timestamp < ttl_seconds:
-                    return result
-
-            result = func(*args, **kwargs)
-            cache[key] = (result, current_time)
-            return result
-
-        return wrapper
-
-    return decorator
-
-
-# ==========================================
-# 5. ТАЙМЕР ДЛЯ ОТЛАДКИ (опционально)
-# ==========================================
-
-class Timer:
-    """Простой таймер для замера времени выполнения"""
-
-    def __init__(self, name: str = ""):
-        self.name = name
-
-    def __enter__(self):
-        self.start = time.time()
-        return self
-
-    def __exit__(self, *args):
-        self.end = time.time()
-        self.interval = self.end - self.start
-        if self.name:
-            print(f"[Timer] {self.name}: {self.interval:.3f} сек")
-
-
-# ==========================================
-# 6. УМНЫЙ ЗАГРУЗЧИК ФАЙЛОВ С АВТО-КОДИРОВКОЙ
-# ==========================================
-
-class FileLoader:
-    """Умный загрузчик файлов с автоопределением кодировки"""
-
-    ENCODINGS = ['utf-8', 'windows-1251', 'cp1251', 'koi8-r']
-
-    @staticmethod
-    def load_lines(filename: str) -> Optional[List[str]]:
-        """Загружает строки из файла с автоопределением кодировки"""
-        if not os.path.exists(filename):
+    # Выбираем ровно 5 пробелов для размещения цифр
+    selected = set(correct_indices)
+    if len(selected) < 5:
+        candidates = [i for i in all_indices if i not in selected]
+        needed = 5 - len(selected)
+        if len(candidates) >= needed:
+            selected.update(random.sample(candidates, needed))
+        else:
+            # Не хватает кандидатов
             return None
 
-        for enc in FileLoader.ENCODINGS:
-            try:
-                with open(filename, 'r', encoding=enc) as f:
-                    return [line.strip() for line in f if line.strip()]
-            except UnicodeDecodeError:
-                continue
-            except Exception:
-                continue
+    sorted_indices = sorted(selected)
 
-        # Последняя попытка с игнорированием ошибок
-        try:
-            with open(filename, 'r', encoding='utf-8', errors='ignore') as f:
-                return [line.strip() for line in f if line.strip()]
-        except:
-            return None
+    # Строим скрытое предложение
+    hidden_parts = []
+    for i, word in enumerate(words):
+        hidden_parts.append(word)
+        if i < len(words) - 1:  # не последнее слово
+            if i in sorted_indices:
+                num = sorted_indices.index(i) + 1
+                hidden_parts.append(f" ({num}) ")
+            else:
+                hidden_parts.append(" ")
+        # последнее слово – ничего не добавляем
+
+    hidden_text = ''.join(hidden_parts)
+
+    # Формируем правильный ответ (номера цифр, соответствующие запятым)
+    answer_nums = [str(idx + 1) for idx, pos in enumerate(sorted_indices) if pos in correct_indices]
+    answer_code = ''.join(sorted(answer_nums))  # уже по возрастанию
+
+    return hidden_text, answer_code, full_sentence
 
 
-# ==========================================
-# 7. БЫСТРЫЙ ГЕНЕРАТОР СЛУЧАЙНЫХ ЧИСЕЛ
-# ==========================================
+def generate_punct_task(task_num, sentences):
+    """Генерирует случайное задание из списка предложений"""
+    if not sentences:
+        return None, None, None
 
-class FastRandom:
-    """Быстрый генератор случайных чисел (если нужно много random операций)"""
-
-    def __init__(self, seed=None):
-        import random
-        self.random = random
-        if seed:
-            self.random.seed(seed)
-
-    def choice(self, seq):
-        """Быстрый выбор случайного элемента"""
-        return seq[self.random.randint(0, len(seq) - 1)]
-
-    def sample(self, population, k):
-        """Быстрая выборка (для маленьких списков)"""
-        if k > len(population):
-            return population
-        # Для маленьких списков используем простой метод
-        if len(population) < 100:
-            indices = set()
-            while len(indices) < k:
-                indices.add(self.random.randint(0, len(population) - 1))
-            return [population[i] for i in indices]
-        # Для больших - стандартный sample
-        return self.random.sample(population, k)
+    attempts = 0
+    while attempts < 20:
+        # Было: sentence = random.choice(sentences)
+        sentence = opt.fast_choice(sentences)  # новая строка
+        res = generate_from_sentence(sentence)
+        if res is not None:
+            return res
+        attempts += 1
+    return None, None, None
 
 
 # ==========================================
-# 8. СОЗДАЁМ ЕДИНЫЙ ИНТЕРФЕЙС
+# КЛАВИАТУРЫ
 # ==========================================
 
-class Optimization:
-    """Единый интерфейс для всех оптимизаций"""
-
-    def __init__(self, stats_file: str = 'stats.json'):
-        self.stats_cache = StatsCache(stats_file)
-        self.words_cache = WordsFileCache()
-        self.file_loader = FileLoader()
-        self.random = FastRandom()
-
-    def load_stats(self) -> Dict:
-        """Загружает статистику с кешированием"""
-        return self.stats_cache.load()
-
-    def save_stats(self, data: Dict) -> bool:
-        """Сохраняет статистику"""
-        return self.stats_cache.save(data)
-
-    def mark_stats_dirty(self):
-        """Помечает статистику как изменённую"""
-        self.stats_cache.mark_dirty()
-
-    def load_words_file(self, filename: str) -> Optional[List[str]]:
-        """Загружает файл со словами с кешированием"""
-        return self.words_cache.get(filename, self.file_loader.load_lines)
-
-    def clear_all_caches(self):
-        """Очищает все кеши"""
-        self.stats_cache.clear()
-        self.words_cache.clear()
-
-    def fast_choice(self, seq):
-        """Быстрый random.choice"""
-        return self.random.choice(seq)
-
-    def fast_sample(self, population, k):
-        """Быстрый random.sample"""
-        return self.random.sample(population, k)
+def punct_choice_kb():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add("Задание 17", "Задание 18", "Задание 19", "Задание 20", "🏠 В меню")
+    return markup
 
 
-# Создаём глобальный экземпляр для использования во всём приложении
-_optimization_instance = None
+def task_kb():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add("Тренировка", "Блиц", "Статистика", "⬅️ Назад к заданиям")
+    return markup
 
 
-def get_optimization(stats_file: str = 'stats.json') -> Optimization:
-    """Возвращает глобальный экземпляр оптимизации"""
-    global _optimization_instance
-    if _optimization_instance is None:
-        _optimization_instance = Optimization(stats_file)
-    return _optimization_instance
+def words_kb():
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add("Играть", "Работа над ошибками", "⬅️ Назад к заданиям")
+    return markup
 
+def send_punct_question(chat_id):
+    """Отправляет вопрос по пунктуации (публичная функция)"""
+    state = _user_state.get(chat_id)
+    if not state:
+        return
+    num = state['task_num']
+    u = _load_data(str(chat_id))
+    u = ensure_task_data(u, num)
+    _save_data(str(chat_id), u)
+
+    sentences = load_punct_words(num)
+    if not sentences:
+        _bot.send_message(chat_id, f"Ошибка! Файл punct{num}.txt не найден или пуст.")
+        return
+
+    hidden, ans, full = generate_punct_task(num, sentences)
+    if not hidden:
+        _bot.send_message(chat_id, "Ошибка генерации задания.")
+        return
+
+    state['correct_ans'] = ans
+    state['explanation'] = full
+
+    total = state.get('total_count', state['remaining'])
+    done = total - state['remaining'] + 1
+
+    if not state.get('instruction_shown'):
+        instruction = "📌 Укажи номера позиций, где должны стоять запятые. Введи цифры слитно, например: 13\n\n"
+        state['instruction_shown'] = True
+    else:
+        instruction = ""
+
+    _bot.send_message(chat_id,
+                      f"📝 Задание №{num}  [{done} из {total}]\n"
+                      f"{instruction}{hidden}",
+                      reply_markup=types.ReplyKeyboardRemove())
 
 # ==========================================
-# 9. ДЕКОРАТОР ДЛЯ АВТОМАТИЧЕСКОГО СОХРАНЕНИЯ
+# ОБРАБОТЧИКИ
 # ==========================================
 
-def auto_save_stats(func):
-    """Декоратор для автоматического сохранения статистики после выполнения функции"""
+def register_handlers(bot, user_state, load_data, save_data):
+    global _bot, _user_state, _load_data, _save_data
+    _bot = bot
+    _user_state = user_state
+    _load_data = load_data
+    _save_data = save_data
 
-    def wrapper(self, *args, **kwargs):
-        result = func(self, *args, **kwargs)
-        if hasattr(self, 'save_data'):
-            self.save_data()
-        return result
+    # ===== Вход в раздел Пунктуация =====
+    @_bot.message_handler(func=lambda m: m.text == "Пунктуация")
+    def punct_main(m):
+        _bot.send_message(m.chat.id, "📂 Раздел ПУНКТУАЦИЯ. Выбери задание:",
+                          reply_markup=punct_choice_kb())
 
-    return wrapper
+    # ===== Выбор задания 17-20 =====
+    @_bot.message_handler(func=lambda m: m.text in ["Задание 17", "Задание 18", "Задание 19", "Задание 20"])
+    def select_punct_task(m):
+        num = m.text.split()[1]
+        _user_state[m.chat.id] = {'task_num': num}
+        _bot.send_message(m.chat.id, f"🎯 Выбрано задание {num}", reply_markup=task_kb())
+
+    # ===== Назад к списку заданий =====
+    @_bot.message_handler(func=lambda m: m.text == "⬅️ Назад к заданиям")
+    def back_to_punct_choice(m):
+        _bot.send_message(m.chat.id, "Выбери задание:", reply_markup=punct_choice_kb())
+
+    # ===== СТАТИСТИКА =====
+    @_bot.message_handler(func=lambda m: m.text == "Статистика" and
+                                         _user_state.get(m.chat.id, {}).get('task_num') in ['17', '18', '19', '20'])
+    def punct_stats_handler(m):
+        cid = m.chat.id
+        num = _user_state[cid]['task_num']
+        u = _load_data(str(cid))
+        u = ensure_task_data(u, num)
+        t_data = u["tasks"][num]
+
+        total = t_data["stats"]["total"]
+        correct = t_data["stats"]["correct"]
+        perc = int(correct / total * 100) if total > 0 else 0
+        words_done = len(t_data.get("completed_words", []))
+
+        text = (f"📊 СТАТИСТИКА (Задание {num})\n"
+                f"──────────────────\n"
+                f"🎯 Тренировка:\n"
+                f"   • Решено: {total}\n"
+                f"   • Верно: {correct} ({perc}%)\n\n"
+                f"⚡ Блиц:\n"
+                f"   • Выучено: {words_done}\n"
+                f"   • Серия: {t_data['stats'].get('streak', 0)} (Лучшая: {t_data['stats'].get('best_streak', 0)})")
+
+        _bot.send_message(cid, text)
+
+    # ===== ТРЕНИРОВКА =====
+    @_bot.message_handler(func=lambda m: m.text == "Тренировка" and
+                                         _user_state.get(m.chat.id, {}).get('task_num') in ['17', '18', '19', '20'])
+    def punct_train_init(m):
+        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+        markup.add("1", "3", "5", "10", "Назад")
+        _bot.send_message(m.chat.id, "Количество заданий?", reply_markup=markup)
+        _user_state[m.chat.id]['mode'] = 'awaiting_punct_count'
+
+    @_bot.message_handler(func=lambda m: m.text in ["1", "3", "5", "10"] and
+                                         _user_state.get(m.chat.id, {}).get('mode') == 'awaiting_punct_count')
+    def punct_train_start(m):
+        cid = m.chat.id
+        count = int(m.text)
+        _user_state[cid].update({
+            'mode': 'punct_train',
+            'remaining': count,
+            'total_count': count,
+            'session_score': 0,
+            'instruction_shown': False
+        })
+        send_punct_question(cid)
+
+    @_bot.message_handler(func=lambda m: _user_state.get(m.chat.id, {}).get('mode') == 'punct_train')
+    def handle_punct_train_answer(m):
+        cid = m.chat.id
+        state = _user_state[cid]
+        user_ans = "".join(sorted(set(filter(str.isdigit, m.text))))
+
+        uid = str(cid)
+        u = _load_data(uid)
+        num = state['task_num']
+        u = ensure_task_data(u, num)
+        t_data = u["tasks"][num]
+
+        t_data["stats"]["total"] += 1
+
+        if user_ans == state['correct_ans']:
+            t_data["stats"]["correct"] += 1
+            state['session_score'] += 1
+            _bot.send_message(cid, "✅ Правильно!")
+        else:
+            _bot.send_message(cid,
+                              f"❌ Ошибка!\nПравильный ответ: {state['correct_ans']}\n\nРазбор:\n{state['explanation']}")
+
+        _save_data(uid, u)
+
+        state['remaining'] -= 1
+        if state['remaining'] > 0:
+            send_punct_question(cid)
+        else:
+            _bot.send_message(cid, f"🏁 Тренировка окончена.\nРезультат: {state['session_score']} из {state['total_count']}",
+                              reply_markup=task_kb())
+            state.pop('mode', None)
+
+    # ===== РЕЖИМ «БЛИЦ» (игра и работа над ошибками) =====
+    @_bot.message_handler(func=lambda m: m.text == "Блиц" and
+                                         _user_state.get(m.chat.id, {}).get('task_num') in ['17', '18', '19', '20'])
+    def punct_words_init(m):
+        _user_state[m.chat.id].pop('blitz_instruction_shown', None)
+        _bot.send_message(m.chat.id, "⚡ Режим Блиц — угадай где ставить запятые!", reply_markup=words_kb())
+
+    @_bot.message_handler(func=lambda m: m.text == "Играть" and
+                                         _user_state.get(m.chat.id, {}).get('task_num') in ['17', '18', '19', '20'])
+    def punct_game_start(m):
+        cid = m.chat.id
+        num = _user_state[cid]['task_num']
+        uid = str(cid)
+        u = _load_data(uid)
+        u = ensure_task_data(u, num)
+
+        sentences = load_punct_words(num)
+        if not sentences:
+            _bot.send_message(cid, f"Файл punct{num}.txt пуст!")
+            return
+
+        completed = u["tasks"][num].get("completed_words", [])
+        available = [s for s in sentences if s not in completed]
+        if not available:
+            u["tasks"][num]["completed_words"] = []
+            _save_data(uid, u)
+            _bot.send_message(cid, "🏆 Ты прошел все предложения! Начинаем заново.")
+            available = sentences
+
+        full = random.choice(available)
+        res = generate_from_sentence(full)
+        if res is None:
+            _bot.send_message(cid, "Ошибка генерации задания.")
+            return
+        hidden, ans, _ = res
+        obj = {"hidden": hidden, "full": full, "answer": ans}
+
+        first = _user_state[cid].get('blitz_instruction_shown', False)
+        _user_state[cid].update({
+            'mode': 'punct_word_game',
+            'word_obj': obj,
+            'blitz_instruction_shown': True
+        })
+
+        instruction = "" if first else "📌 Введи номера позиций, где должны стоять запятые:\n\n"
+        _bot.send_message(cid, f"{instruction}{hidden}", reply_markup=types.ReplyKeyboardRemove())
+
+    @_bot.message_handler(func=lambda m: m.text == "Работа над ошибками" and
+                                         _user_state.get(m.chat.id, {}).get('task_num') in ['17', '18', '19', '20'])
+    def punct_correction_start(m):
+        cid = m.chat.id
+        num = _user_state[cid]['task_num']
+        uid = str(cid)
+        u = _load_data(uid)
+        u = ensure_task_data(u, num)
+
+        wrong_list = u["tasks"][num].get("wrong_words", [])
+        if not wrong_list:
+            _bot.send_message(cid, "✅ Список ошибок пуст! Молодец.", reply_markup=words_kb())
+            return
+        target = random.choice(wrong_list)
+        _user_state[cid].update({'mode': 'punct_correction', 'word_obj': target})
+        _bot.send_message(cid, f"Исправь ошибки в предложении:\n\n{target['hidden']}",
+                          reply_markup=types.ReplyKeyboardRemove())
+
+    @_bot.message_handler(
+        func=lambda m: _user_state.get(m.chat.id, {}).get('mode') in ['punct_word_game', 'punct_correction'])
+    def handle_punct_game_answer(m):
+        cid = m.chat.id
+        state = _user_state[cid]
+        mode = state['mode']
+        user_ans = "".join(sorted(set(filter(str.isdigit, m.text))))
+        obj = state['word_obj']
+        correct = obj['answer']
+
+        uid = str(cid)
+        u = _load_data(uid)
+        num = state['task_num']
+        u = ensure_task_data(u, num)
+        t_data = u["tasks"][num]
+
+        if user_ans == correct:
+            _bot.send_message(cid, "✅ Верно!")
+            if mode == 'punct_word_game':
+                t_data["stats"]["streak"] = t_data["stats"].get("streak", 0) + 1
+                if t_data["stats"]["streak"] > t_data["stats"].get("best_streak", 0):
+                    t_data["stats"]["best_streak"] = t_data["stats"]["streak"]
+                if obj['full'] not in t_data['completed_words']:
+                    t_data['completed_words'].append(obj['full'])
+                _save_data(uid, u)
+                punct_game_start(m)
+            else:
+                t_data["wrong_words"] = [w for w in t_data["wrong_words"] if w['full'] != obj['full']]
+                _save_data(uid, u)
+                _bot.send_message(cid, "Предложение исправлено!", reply_markup=words_kb())
+                state.pop('mode', None)
+        else:
+            _bot.send_message(cid, f"❌ Ошибка! Правильно: {obj['full']}")
+            if mode == 'punct_word_game':
+                t_data["stats"]["streak"] = 0
+                if not any(w['full'] == obj['full'] for w in t_data['wrong_words']):
+                    t_data['wrong_words'].append(obj)
+                _save_data(uid, u)
+                _bot.send_message(cid, "Серия прервана. Предложение ушло в «Работу над ошибками».",
+                                  reply_markup=words_kb())
+                state.pop('mode', None)
+            else:
+                _bot.send_message(cid, "Попробуй еще раз позже.", reply_markup=words_kb())
+                state.pop('mode', None)
+
+    # ===== Назад из меню «Блиц» =====
+    @_bot.message_handler(func=lambda m: m.text == "⬅️ Назад к заданиям" and
+                                         _user_state.get(m.chat.id, {}).get('task_num') in ['17', '18', '19', '20'])
+    def back_from_words(m):
+        cid = m.chat.id
+        if cid in _user_state:
+            _user_state[cid].pop('mode', None)
+        _bot.send_message(cid, "Меню задания:", reply_markup=task_kb())
