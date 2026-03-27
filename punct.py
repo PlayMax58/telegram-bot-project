@@ -167,13 +167,13 @@ def punct_choice_kb():
 
 def task_kb():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.add("Тренировка", "Слова", "Статистика", "⬅️ Назад к заданиям")
+    markup.add("Тренировка", "Блиц", "Статистика", "⬅️ Назад к заданиям")
     return markup
 
 
 def words_kb():
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add("Играть", "Работа над ошибками", "Назад")
+    markup.add("Играть", "Работа над ошибками", "⬅️ Назад к заданиям")
     return markup
 
 def send_punct_question(chat_id):
@@ -182,9 +182,9 @@ def send_punct_question(chat_id):
     if not state:
         return
     num = state['task_num']
-    data = _load_data()
-    data = ensure_task_data(data, num)
-    _save_data(data)
+    u = _load_data(str(chat_id))
+    u = ensure_task_data(u, num)
+    _save_data(str(chat_id), u)
 
     sentences = load_punct_words(num)
     if not sentences:
@@ -198,8 +198,19 @@ def send_punct_question(chat_id):
 
     state['correct_ans'] = ans
     state['explanation'] = full
+
+    total = state.get('total_count', state['remaining'])
+    done = total - state['remaining'] + 1
+
+    if not state.get('instruction_shown'):
+        instruction = "📌 Укажи номера позиций, где должны стоять запятые. Введи цифры слитно, например: 13\n\n"
+        state['instruction_shown'] = True
+    else:
+        instruction = ""
+
     _bot.send_message(chat_id,
-                      f"📝 Задание №{num} (Осталось: {state['remaining']})\n\n{hidden}",
+                      f"📝 Задание №{num}  [{done} из {total}]\n"
+                      f"{instruction}{hidden}",
                       reply_markup=types.ReplyKeyboardRemove())
 
 # ==========================================
@@ -237,15 +248,9 @@ def register_handlers(bot, user_state, load_data, save_data):
     def punct_stats_handler(m):
         cid = m.chat.id
         num = _user_state[cid]['task_num']
-        data = _load_data()
-
-        # Гарантируем наличие структуры
-        data = ensure_task_data(data, num)
-        t_data = data["tasks"][num]
-
-        # Дополнительная проверка
-        if "best_streak" not in t_data["stats"]:
-            t_data["stats"]["best_streak"] = 0
+        u = _load_data(str(cid))
+        u = ensure_task_data(u, num)
+        t_data = u["tasks"][num]
 
         total = t_data["stats"]["total"]
         correct = t_data["stats"]["correct"]
@@ -254,12 +259,12 @@ def register_handlers(bot, user_state, load_data, save_data):
 
         text = (f"📊 СТАТИСТИКА (Задание {num})\n"
                 f"──────────────────\n"
-                f"🎯 Тренировка (неделя):\n"
+                f"🎯 Тренировка:\n"
                 f"   • Решено: {total}\n"
                 f"   • Верно: {correct} ({perc}%)\n\n"
-                f"🧠 Режим «Слова»:\n"
+                f"⚡ Блиц:\n"
                 f"   • Выучено: {words_done}\n"
-                f"   • Серия: {t_data['stats']['streak']} (Лучшая: {t_data['stats']['best_streak']})")
+                f"   • Серия: {t_data['stats'].get('streak', 0)} (Лучшая: {t_data['stats'].get('best_streak', 0)})")
 
         _bot.send_message(cid, text)
 
@@ -280,10 +285,11 @@ def register_handlers(bot, user_state, load_data, save_data):
         _user_state[cid].update({
             'mode': 'punct_train',
             'remaining': count,
-            'session_score': 0
+            'total_count': count,
+            'session_score': 0,
+            'instruction_shown': False
         })
         send_punct_question(cid)
-
 
     @_bot.message_handler(func=lambda m: _user_state.get(m.chat.id, {}).get('mode') == 'punct_train')
     def handle_punct_train_answer(m):
@@ -291,10 +297,11 @@ def register_handlers(bot, user_state, load_data, save_data):
         state = _user_state[cid]
         user_ans = "".join(sorted(set(filter(str.isdigit, m.text))))
 
-        data = _load_data()
+        uid = str(cid)
+        u = _load_data(uid)
         num = state['task_num']
-        data = ensure_task_data(data, num)
-        t_data = data["tasks"][num]
+        u = ensure_task_data(u, num)
+        t_data = u["tasks"][num]
 
         t_data["stats"]["total"] += 1
 
@@ -306,75 +313,78 @@ def register_handlers(bot, user_state, load_data, save_data):
             _bot.send_message(cid,
                               f"❌ Ошибка!\nПравильный ответ: {state['correct_ans']}\n\nРазбор:\n{state['explanation']}")
 
-        _save_data(data)
+        _save_data(uid, u)
 
         state['remaining'] -= 1
         if state['remaining'] > 0:
             send_punct_question(cid)
         else:
-            _bot.send_message(cid, f"🏁 Тренировка окончена.\nРезультат: {state['session_score']}",
+            _bot.send_message(cid, f"🏁 Тренировка окончена.\nРезультат: {state['session_score']} из {state['total_count']}",
                               reply_markup=task_kb())
             state.pop('mode', None)
 
-    # ===== РЕЖИМ «СЛОВА» (игра и работа над ошибками) =====
-    @_bot.message_handler(func=lambda m: m.text == "Слова" and
+    # ===== РЕЖИМ «БЛИЦ» (игра и работа над ошибками) =====
+    @_bot.message_handler(func=lambda m: m.text == "Блиц" and
                                          _user_state.get(m.chat.id, {}).get('task_num') in ['17', '18', '19', '20'])
     def punct_words_init(m):
-        _bot.send_message(m.chat.id, "Режим запоминания предложений.", reply_markup=words_kb())
+        _user_state[m.chat.id].pop('blitz_instruction_shown', None)
+        _bot.send_message(m.chat.id, "⚡ Режим Блиц — угадай где ставить запятые!", reply_markup=words_kb())
 
     @_bot.message_handler(func=lambda m: m.text == "Играть" and
                                          _user_state.get(m.chat.id, {}).get('task_num') in ['17', '18', '19', '20'])
     def punct_game_start(m):
         cid = m.chat.id
         num = _user_state[cid]['task_num']
-        data = _load_data()
-        data = ensure_task_data(data, num)
+        uid = str(cid)
+        u = _load_data(uid)
+        u = ensure_task_data(u, num)
 
         sentences = load_punct_words(num)
         if not sentences:
-            _bot.send_message(cid, f"Файл words{num}.txt пуст!")
+            _bot.send_message(cid, f"Файл punct{num}.txt пуст!")
             return
 
-        completed = data["tasks"][num].get("completed_words", [])
+        completed = u["tasks"][num].get("completed_words", [])
         available = [s for s in sentences if s not in completed]
         if not available:
-            data["tasks"][num]["completed_words"] = []
-            _save_data(data)
+            u["tasks"][num]["completed_words"] = []
+            _save_data(uid, u)
             _bot.send_message(cid, "🏆 Ты прошел все предложения! Начинаем заново.")
             available = sentences
 
         full = random.choice(available)
         res = generate_from_sentence(full)
         if res is None:
-            _bot.send_message(cid, "Ошибка генерации задания для этого предложения.")
+            _bot.send_message(cid, "Ошибка генерации задания.")
             return
         hidden, ans, _ = res
         obj = {"hidden": hidden, "full": full, "answer": ans}
+
+        first = _user_state[cid].get('blitz_instruction_shown', False)
         _user_state[cid].update({
             'mode': 'punct_word_game',
-            'word_obj': obj
+            'word_obj': obj,
+            'blitz_instruction_shown': True
         })
-        _bot.send_message(cid,
-                          f"Вставь пропущенные знаки препинания (введи номера цифр, где должны быть запятые):\n\n{hidden}",
-                          reply_markup=types.ReplyKeyboardRemove())
+
+        instruction = "" if first else "📌 Введи номера позиций, где должны стоять запятые:\n\n"
+        _bot.send_message(cid, f"{instruction}{hidden}", reply_markup=types.ReplyKeyboardRemove())
 
     @_bot.message_handler(func=lambda m: m.text == "Работа над ошибками" and
                                          _user_state.get(m.chat.id, {}).get('task_num') in ['17', '18', '19', '20'])
     def punct_correction_start(m):
         cid = m.chat.id
         num = _user_state[cid]['task_num']
-        data = _load_data()
-        data = ensure_task_data(data, num)
+        uid = str(cid)
+        u = _load_data(uid)
+        u = ensure_task_data(u, num)
 
-        wrong_list = data["tasks"][num].get("wrong_words", [])
+        wrong_list = u["tasks"][num].get("wrong_words", [])
         if not wrong_list:
             _bot.send_message(cid, "✅ Список ошибок пуст! Молодец.", reply_markup=words_kb())
             return
         target = random.choice(wrong_list)
-        _user_state[cid].update({
-            'mode': 'punct_correction',
-            'word_obj': target
-        })
+        _user_state[cid].update({'mode': 'punct_correction', 'word_obj': target})
         _bot.send_message(cid, f"Исправь ошибки в предложении:\n\n{target['hidden']}",
                           reply_markup=types.ReplyKeyboardRemove())
 
@@ -388,10 +398,11 @@ def register_handlers(bot, user_state, load_data, save_data):
         obj = state['word_obj']
         correct = obj['answer']
 
-        data = _load_data()
+        uid = str(cid)
+        u = _load_data(uid)
         num = state['task_num']
-        data = ensure_task_data(data, num)
-        t_data = data["tasks"][num]
+        u = ensure_task_data(u, num)
+        t_data = u["tasks"][num]
 
         if user_ans == correct:
             _bot.send_message(cid, "✅ Верно!")
@@ -399,28 +410,22 @@ def register_handlers(bot, user_state, load_data, save_data):
                 t_data["stats"]["streak"] = t_data["stats"].get("streak", 0) + 1
                 if t_data["stats"]["streak"] > t_data["stats"].get("best_streak", 0):
                     t_data["stats"]["best_streak"] = t_data["stats"]["streak"]
-                if 'completed_words' not in t_data:
-                    t_data['completed_words'] = []
                 if obj['full'] not in t_data['completed_words']:
                     t_data['completed_words'].append(obj['full'])
-                _save_data(data)
-                punct_game_start(m)  # следующее слово
-            else:  # correction
-                new_wrong = [w for w in t_data.get("wrong_words", []) if w['full'] != obj['full']]
-                t_data["wrong_words"] = new_wrong
-                _save_data(data)
+                _save_data(uid, u)
+                punct_game_start(m)
+            else:
+                t_data["wrong_words"] = [w for w in t_data["wrong_words"] if w['full'] != obj['full']]
+                _save_data(uid, u)
                 _bot.send_message(cid, "Предложение исправлено!", reply_markup=words_kb())
                 state.pop('mode', None)
         else:
             _bot.send_message(cid, f"❌ Ошибка! Правильно: {obj['full']}")
             if mode == 'punct_word_game':
                 t_data["stats"]["streak"] = 0
-                if 'wrong_words' not in t_data:
-                    t_data['wrong_words'] = []
-                exists = any(w['full'] == obj['full'] for w in t_data['wrong_words'])
-                if not exists:
+                if not any(w['full'] == obj['full'] for w in t_data['wrong_words']):
                     t_data['wrong_words'].append(obj)
-                _save_data(data)
+                _save_data(uid, u)
                 _bot.send_message(cid, "Серия прервана. Предложение ушло в «Работу над ошибками».",
                                   reply_markup=words_kb())
                 state.pop('mode', None)
@@ -428,10 +433,11 @@ def register_handlers(bot, user_state, load_data, save_data):
                 _bot.send_message(cid, "Попробуй еще раз позже.", reply_markup=words_kb())
                 state.pop('mode', None)
 
-    # ===== Назад из меню «Слова» =====
-    @_bot.message_handler(func=lambda m: m.text == "Назад" and
+    # ===== Назад из меню «Блиц» =====
+    @_bot.message_handler(func=lambda m: m.text == "⬅️ Назад к заданиям" and
                                          _user_state.get(m.chat.id, {}).get('task_num') in ['17', '18', '19', '20'])
     def back_from_words(m):
-        if m.chat.id in _user_state and 'mode' in _user_state[m.chat.id]:
-            del _user_state[m.chat.id]['mode']
-        _bot.send_message(m.chat.id, "Меню задания:", reply_markup=task_kb())
+        cid = m.chat.id
+        if cid in _user_state:
+            _user_state[cid].pop('mode', None)
+        _bot.send_message(cid, "Меню задания:", reply_markup=task_kb())
