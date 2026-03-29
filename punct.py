@@ -73,68 +73,226 @@ def load_punct_words(task_num):
     return opt.load_words_file(filename)
 
 
-def generate_from_sentence(full_sentence):
+def generate_from_sentence(full_sentence, task_num='0'):
     """
-    Преобразует полное предложение (с запятыми) в задание с цифрами.
-    Возвращает (hidden_text, answer_code, full_sentence) или None, если не удалось.
+    Преобразует предложение в задание с цифрами.
+
+    Формат строки в файле:
+      - / (слеш с пробелами вокруг) = правильная запятая по нужному правилу
+      - обычные запятые = остаются как есть, не заменяются
+    
+    Алгоритм:
+      1. Находим все позиции слешей — это правильные ответы
+      2. Добавляем ложные цифры в умные места (перед союзами, между длинными словами)
+         но НЕ сразу после обычной запятой
+      3. Итого цифр: от 5 до 9 (зависит от длины предложения)
     """
     if not full_sentence:
         return None
 
-    # Разбиваем по пробелам, сохраняя знаки при словах
+    # Разбиваем на токены (слово или знак препинания)
+    # Токен — это всё между пробелами
     parts = full_sentence.split(' ')
-    words = []
-    comma_after = []  # True, если после слова была запятая
-    for part in parts:
-        if part.endswith(','):
-            words.append(part[:-1])  # убираем запятую
-            comma_after.append(True)
-        else:
-            words.append(part)
-            comma_after.append(False)
+    # Убираем пустые части (двойные пробелы)
+    parts = [p for p in parts if p]
 
-    num_spaces = len(words) - 1
-    if num_spaces < 5:
-        # Нельзя разместить 5 цифр – предложение слишком короткое
+    if len(parts) < 3:
         return None
 
-    # Индексы пробелов (от 0 до num_spaces-1)
-    all_indices = list(range(num_spaces))
-    correct_indices = [i for i in range(num_spaces) if comma_after[i]]
+    # Определяем позиции слешей (правильные ответы)
+    # Слеш стоит как отдельный токен " / "
+    correct_positions = set()  # индексы пробелов ПЕРЕД которыми стоит слеш
+    clean_parts = []  # части без слешей
 
-    if len(correct_indices) > 5:
-        return None  # слишком много правильных ответов
-
-    # Выбираем ровно 5 пробелов для размещения цифр
-    selected = set(correct_indices)
-    if len(selected) < 5:
-        candidates = [i for i in all_indices if i not in selected]
-        needed = 5 - len(selected)
-        if len(candidates) >= needed:
-            selected.update(random.sample(candidates, needed))
+    i = 0
+    while i < len(parts):
+        if parts[i] == '/':
+            # Слеш обозначает запятую между clean_parts[-1] и следующим словом
+            # Запятая ставится ПОСЛЕ предыдущего слова
+            if clean_parts:
+                correct_positions.add(len(clean_parts) - 1)
         else:
-            # Не хватает кандидатов
-            return None
+            clean_parts.append(parts[i])
+        i += 1
 
-    sorted_indices = sorted(selected)
+    if not clean_parts or len(clean_parts) < 3:
+        return None
+
+    if not correct_positions:
+        return None  # нет ни одного слеша — некорректная строка
+
+    # Если слешей больше 5 — случайно оставляем только 5 как правильные,
+    # остальные превращаем обратно в обычные запятые (добавляем к слову)
+    MAX_CORRECT = 5
+    if len(correct_positions) > MAX_CORRECT:
+        keep = set(random.sample(sorted(correct_positions), MAX_CORRECT))
+        demoted = correct_positions - keep
+        # Добавляем запятую к концу слова для демотированных позиций
+        for pos in demoted:
+            clean_parts[pos] = clean_parts[pos] + ','
+        correct_positions = keep
+
+    num_words = len(clean_parts)
+    # Пробелы между словами: индекс пробела i = между словом i и i+1
+    num_gaps = num_words - 1
+
+    if num_gaps < 1:
+        return None
+
+    # Определяем целевое количество цифр в зависимости от длины предложения
+    if num_words <= 8:
+        target_total = 5
+    elif num_words <= 14:
+        target_total = 6
+    elif num_words <= 20:
+        target_total = 7
+    elif num_words <= 28:
+        target_total = 8
+    else:
+        target_total = 9
+
+    # Кандидаты для ложных цифр — умные позиции
+    # Союзы и частицы перед которыми реально можно ошибиться (общий список)
+    TRAP_WORDS = {
+        'и', 'а', 'но', 'или', 'что', 'как', 'когда', 'если', 'хотя',
+        'потому', 'чтобы', 'однако', 'зато', 'либо', 'то', 'да', 'же',
+        'ведь', 'тоже', 'также', 'притом', 'причём', 'словно', 'будто',
+        'пока', 'после', 'прежде', 'раз', 'коль', 'ибо'
+    }
+
+    # Для задания 17 — слова которые похожи на вводные, но НЕ являются ими
+    TRAP_WORDS_17 = {
+        'мало-помалу', 'вдруг', 'будто', 'ведь', 'якобы', 'вряд', 'все-таки',
+        'даже', 'едва-ли', 'исключительно', 'именно', 'почти', 'просто',
+        'приблизительно', 'притом', 'поэтому', 'решительно', 'однажды',
+        'словно', 'вот', 'примерно', 'авось', 'буквально', 'вдобавок',
+        'вроде', 'наверняка', 'небось', 'непременно', 'определенно',
+        'отчасти', 'поистине', 'по-прежнему', 'пусть', 'лишь', 'только',
+        'иногда', 'между', 'все', 'тем', 'к', 'по', 'как'
+    }
+
+    if str(task_num) == '17':
+        TRAP_WORDS = TRAP_WORDS | TRAP_WORDS_17
+
+    trap_candidates = []  # список одиночных позиций (до ИЛИ после слова)
+    trap_pairs = []       # пары позиций (до И после слова) для задания 17
+
+    for idx in range(num_gaps):
+        if idx in correct_positions:
+            continue
+        if clean_parts[idx].endswith(','):
+            continue
+        next_word = clean_parts[idx + 1]
+        if next_word in {'.', '!', '?'} or next_word.endswith(('.', '!', '?')):
+            continue
+
+        next_word_clean = next_word.lower().rstrip('.,!?')
+        is_trap_word = next_word_clean in TRAP_WORDS
+
+        if str(task_num) == '17' and is_trap_word:
+            # Определяем позицию ПОСЛЕ слова-ловушки
+            after_idx = idx + 1  # пробел после слова-ловушки
+            after_valid = (
+                after_idx < num_gaps
+                and after_idx not in correct_positions
+                and not clean_parts[after_idx + 1 if after_idx + 1 < num_words else after_idx].endswith(('.', '!', '?'))
+            )
+
+            # Есть ли запятая или слеш перед словом-ловушкой
+            comma_before = (
+                idx in correct_positions
+                or clean_parts[idx].endswith(',')
+            )
+
+            if comma_before:
+                # Запятая уже есть до — ставим цифру только после
+                if after_valid and after_idx not in correct_positions:
+                    trap_candidates.insert(0, after_idx)
+            else:
+                # Нет ничего — ставим и до и после (пара)
+                if after_valid and after_idx not in correct_positions:
+                    trap_pairs.insert(0, (idx, after_idx))
+                else:
+                    trap_candidates.insert(0, idx)
+        elif is_trap_word:
+            trap_candidates.insert(0, idx)
+        else:
+            trap_candidates.append(idx)
+
+    # Сколько ложных нужно
+    n_correct = len(correct_positions)
+    n_fake_needed = target_total - n_correct
+
+    if n_correct >= 9:
+        correct_positions = set(sorted(correct_positions)[:9])
+        n_fake_needed = 0
+    elif n_correct > target_total:
+        n_fake_needed = 0
+
+    n_fake_needed = max(0, n_fake_needed)
+
+    # Набираем ложные позиции — сначала пары, потом одиночные
+    fake_positions = set()
+    for before_idx, after_idx in trap_pairs:
+        if n_fake_needed <= 0:
+            break
+        if before_idx not in fake_positions and after_idx not in fake_positions:
+            fake_positions.add(before_idx)
+            fake_positions.add(after_idx)
+            n_fake_needed -= 2
+
+    if n_fake_needed > 0 and trap_candidates:
+        take = min(n_fake_needed, len(trap_candidates))
+        for c in trap_candidates[:take]:
+            if c not in fake_positions:
+                fake_positions.add(c)
+
+    all_positions = sorted(correct_positions | fake_positions)
+
+    # Итоговое количество должно быть от 5 до 9
+    if len(all_positions) < 5:
+        # Добираем любые оставшиеся позиции
+        remaining = [idx for idx in range(num_gaps)
+                     if idx not in all_positions
+                     and not clean_parts[idx].endswith(',')
+                     and not clean_parts[idx + 1].endswith(('.', '!', '?'))
+                     and clean_parts[idx + 1] not in {'.', '!', '?'}]
+        need_more = 5 - len(all_positions)
+        if len(remaining) < need_more:
+            return None  # предложение слишком короткое
+        extra = random.sample(remaining, need_more)
+        all_positions = sorted(set(all_positions) | set(extra))
+
+    if len(all_positions) > 9:
+        # Обрезаем, но правильные сохраняем в приоритете
+        keep_correct = sorted(correct_positions)[:9]
+        keep_fake = [p for p in all_positions if p not in correct_positions]
+        slots_for_fake = 9 - len(keep_correct)
+        all_positions = sorted(set(keep_correct) | set(keep_fake[:slots_for_fake]))
 
     # Строим скрытое предложение
     hidden_parts = []
-    for i, word in enumerate(words):
+    for i, word in enumerate(clean_parts):
         hidden_parts.append(word)
-        if i < len(words) - 1:  # не последнее слово
-            if i in sorted_indices:
-                num = sorted_indices.index(i) + 1
+        if i < num_words - 1:
+            if i in all_positions:
+                num = all_positions.index(i) + 1
                 hidden_parts.append(f" ({num}) ")
             else:
-                hidden_parts.append(" ")
-        # последнее слово – ничего не добавляем
+                hidden_parts.append(' ')
 
     hidden_text = ''.join(hidden_parts)
 
-    # Формируем правильный ответ (номера цифр, соответствующие запятым)
-    answer_nums = [str(idx + 1) for idx, pos in enumerate(sorted_indices) if pos in correct_indices]
-    answer_code = ''.join(sorted(answer_nums))  # уже по возрастанию
+    # Правильные ответы — номера позиций которые соответствуют слешам
+    answer_nums = []
+    for rank, pos in enumerate(all_positions):
+        if pos in correct_positions:
+            answer_nums.append(str(rank + 1))
+
+    answer_code = ''.join(sorted(answer_nums))
+
+    if not answer_code:
+        return None
 
     return hidden_text, answer_code, full_sentence
 
@@ -146,9 +304,8 @@ def generate_punct_task(task_num, sentences):
 
     attempts = 0
     while attempts < 20:
-        # Было: sentence = random.choice(sentences)
-        sentence = opt.fast_choice(sentences)  # новая строка
-        res = generate_from_sentence(sentence)
+        sentence = opt.fast_choice(sentences)
+        res = generate_from_sentence(sentence, task_num)
         if res is not None:
             return res
         attempts += 1
@@ -353,7 +510,7 @@ def register_handlers(bot, user_state, load_data, save_data):
             available = sentences
 
         full = random.choice(available)
-        res = generate_from_sentence(full)
+        res = generate_from_sentence(full, num)
         if res is None:
             _bot.send_message(cid, "Ошибка генерации задания.")
             return
